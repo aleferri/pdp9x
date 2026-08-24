@@ -150,6 +150,11 @@ increment, then shift or rotate, then halt. Placing the increment before the
 shift makes `CIA` = `CMA` + `IAC` a two's complement negate, and
 `CLA IAC RLA` a way to build small constants without touching memory.
 
+The assembler also emits the useful combinations as single mnemonics: `CIA`
+(`CMA IAC`, two's complement negate), `GLK` (`CLA RLA`, the sign or link bit as
+a 0/1 word), `LSR` and `LSL` (`CLL RRA` and `CLL RLA`, logical shifts that put
+the lost bit in `L`), `CLC`, `STL`, `CLAL`, `ONEA`, `ONEX`.
+
 `IAC` and `IXC` are `A + 0 + cin=1`, the same ALU path as `ISZ`, so they cost
 nothing in the datapath beyond the decode. Like `SHA` and `SRA` they **do not
 write `L`**, which keeps them composable with a comparison in flight; if the
@@ -387,14 +392,26 @@ Current assignment:
 | `BD[17:0]` | `DO` | `IR`, `DI` |
 | A | `AC`, `IX`, `SP`, `T`, `PC` | ALU port A |
 | B | `DI`, `IR[11:0]` masked, forced zero | ALU port B |
+| R | ALU result, `DI`, `IR[11:0]` masked | `AC`, `IX`, `SP`, `T`, `DO`, `PC` |
 
 The forced zero on B is not optional: it is what lets the ALU pass A through
 unchanged for register moves, and what makes `IAC`, `IXC` and `SP ± 1` work
 through the adder with carry in.
-| R | ALU result, `DI`, `IR[11:0]` masked | `AC`, `IX`, `SP`, `T`, `DO`, `PC` |
 
-`AR` has its own four-input mux: ALU result, `PC`, `DI`, and the concatenation
-`{PC[16:12], IR[11:0]}`.
+`AR` is on no bus. It has a four-input mux of its own — ALU result, `PC`,
+`DI`, and the concatenation `{PC[16:12], IR[11:0]}` — and its top five bits are
+forced to the stack page on a stack access.
+
+Routing it from bus R instead would cost two more microword bits, and not
+mainly for the extra bus source: the destination field would have to become a
+*set* rather than a value, because a jump loads `PC` and `AR` in the same cycle
+and a push loads `SP` and `AR`. The dedicated mux also keeps
+`{PC[16:12], IR[11:0]}` out of a general bus, where five other registers would
+have to be wired to something only an address ever wants.
+
+Note that `DI` has two destinations that are not the same path: as data it goes
+to bus B and the ALU, as an address it goes to the `AR` mux. That is what makes
+`mm=10` and `mm=11` different sequences rather than the same one.
 
 `L` is packed into bit 17 whenever `PC` crosses a bus, but it is **loaded
 separately** through `mux(ALU_L, DI[17])` with its own enable. The enable is
@@ -425,16 +442,37 @@ Address is registered in cycle N, the access happens in cycle N+1.
 | indirection (an extra access) | 2 |
 | PC loaded other than by increment | +1 |
 
-Execute normally folds into the fetch of the following instruction, because
-`AR ← PC` has already happened. It cannot fold whenever `PC` moves other than
-by the plain increment: `CAL`, `JMP`, a taken skip, `POP LPC`, interrupt entry.
-`ISZ` and `DSZ` pay the penalty only when they actually skip.
+Execute normally folds into the fetch of the following instruction: the last
+microword of a memory reference reads at `AR`, loads `IR`, increments `PC` and
+dispatches, while simultaneously driving `DI` through the ALU into `AC` or
+`IX`. The fetch uses `BD`, `IR` and the incrementer; the tail uses buses A, B
+and R, so nothing collides.
 
-Measured on the samples: CPI 2.7 to 2.8.
+It cannot fold whenever `PC` moves other than by the plain increment: `CAL`,
+`JMP`, a taken skip, `POP LPC`, interrupt entry. `ISZ` and `DSZ` pay that only
+when they actually skip.
+
+**`SAD` and `SXD` cannot fold either, and cost four cycles whether they skip or
+not.** Their result decides where to go next, so the address of the following
+fetch is unknown until the comparison has happened. This was found by writing
+the microprogram, not by reasoning about the model: `sim.py` had been charging
+three. The correction costs 1.6% of the sieve, 0.8% of the console driver and
+4.2% of FOCAL, whose scanner compares constantly.
+
+Measured on the samples: CPI 2.7 to 2.8. See `MICROCODE.md` for the
+microprogram these figures come from.
 
 ### Control
 
-Roughly 30 states, five to six bits. Group 2 is the largest block in state
+Microcoded: 128 microwords of 36 bits, plus two small map ROMs. `MICROCODE.md`
+has the microword format, the sequencer modes and the microprogram.
+
+One dispatch resolves opcode, addressing mode and operate group together,
+because the map ROM is indexed by `IR[17:12]` and those two bits below the
+opcode are `mm` for opcodes 0 through 11 and the group selector for `OPR`. The
+interrupt check costs no cycle either: at the fetch the sequencer forces the
+microaddress and suppresses `PCINC` and the `IR` load, so `PC` still points at
+the instruction that was discarded. Group 2 is the largest block in state
 count and the smallest in cycles: dispatch jumps straight to the state for the
 highest priority set bit, each state clears its own bit and re-dispatches on
 the residue, so the cost is `popcount(mask)`, not four.

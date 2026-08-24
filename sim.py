@@ -155,8 +155,14 @@ class CPU:
                 self.ac = v
             return
         if op == OP_SAD:
+            # The comparison decides a skip, so its result cannot be folded
+            # into the next fetch the way an ALU result bound for a register
+            # can: the fetch address is not known until the compare is done.
+            # Four cycles either way, and skip() already charges one.
             if self.rd(ea) != reg:
                 self.skip()
+            else:
+                self.cycles += self.BRANCH_CYCLES
             return
         v = self.rd(ea)
         if op == OP_TAD:
