@@ -1,0 +1,6 @@
+10 TYPE "N", !
+20 ASK N
+30 TYPE "SQ ", N*N, !
+40 ASK A, B
+50 TYPE "SUM ", A+B, !
+60 QUIT

@@ -1,0 +1,11 @@
+10 TYPE "A ", 3*4, !
+20 TYPE "B ", 12/4, !
+30 TYPE "C ", 7+1, !
+40 TYPE "D ", 2*3*4, !
+50 SET X=7
+60 TYPE "E ", X, !
+70 TYPE "F ", X+1, !
+80 TYPE "G ", X*2, !
+90 TYPE "H ", (X+1), !
+100 TYPE "I ", X*(X+1), !
+110 QUIT

@@ -1,0 +1,761 @@
+// 18-bit accumulator machine, PDP-9 derived.
+// Assemble with: casmeleon -lang=pdp9x.casm -byteSize=32 -endian=big -export=bin f.s
+
+.num 16 "0x" ""
+.num 2 "0b" ""
+.num 8 "0o" ""
+
+.set XReg {
+    X;
+}
+
+// bit position of each register inside the G3 stack mask
+.set SReg {
+    SP;
+    LPC;
+    IX;
+    AC;
+}
+
+.inline MR
+.with ( op : Ints, ind : Ints, idx : Ints, r : Ints, a : Ints ) -> {
+    .if a < 0 || a > 2047 {
+        .error a, "memory reference address outside the 11 bit zero page";
+    }
+    .return ( op << 14 ) + ( ind << 13 ) + ( idx << 12 ) + ( r << 11 ) + a;
+}
+
+.inline JPC
+.with ( op : Ints, a : Ints, here : Ints ) -> {
+    // a == 0 means the label is still unresolved on the first pass;
+    // casmeleon re-evaluates it later, so an .error here would be fatal.
+    .if a != 0 && ( a >> 12 ) != ( here >> 12 ) {
+        .error a, "CAL/JMP direct is PC-page relative: target is in another 4K page";
+    }
+    .return ( op << 14 ) + ( a & 4095 );
+}
+
+.inline JC
+.with ( op : Ints, ind : Ints, idx : Ints, a : Ints ) -> {
+    .if a < 0 || a > 4095 {
+        .error a, "jump class address outside the 12 bit zero page";
+    }
+    .return ( op << 14 ) + ( ind << 13 ) + ( idx << 12 ) + a;
+}
+
+.opcode TAD {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(0, 0, 0, 0, a) ];
+}
+
+.opcode TAD {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(0, 0, 1, 0, a) ];
+}
+
+.opcode TAD {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(0, 1, 0, 0, a) ];
+}
+
+.opcode TAD {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(0, 1, 1, 0, a) ];
+}
+
+.opcode TADX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(0, 0, 0, 1, a) ];
+}
+
+.opcode TADX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(0, 0, 1, 1, a) ];
+}
+
+.opcode TADX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(0, 1, 0, 1, a) ];
+}
+
+.opcode TADX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(0, 1, 1, 1, a) ];
+}
+
+.opcode TAS {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(1, 0, 0, 0, a) ];
+}
+
+.opcode TAS {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(1, 0, 1, 0, a) ];
+}
+
+.opcode TAS {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(1, 1, 0, 0, a) ];
+}
+
+.opcode TAS {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(1, 1, 1, 0, a) ];
+}
+
+.opcode TASX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(1, 0, 0, 1, a) ];
+}
+
+.opcode TASX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(1, 0, 1, 1, a) ];
+}
+
+.opcode TASX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(1, 1, 0, 1, a) ];
+}
+
+.opcode TASX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(1, 1, 1, 1, a) ];
+}
+
+.opcode AND {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(2, 0, 0, 0, a) ];
+}
+
+.opcode AND {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(2, 0, 1, 0, a) ];
+}
+
+.opcode AND {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(2, 1, 0, 0, a) ];
+}
+
+.opcode AND {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(2, 1, 1, 0, a) ];
+}
+
+.opcode ANDX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(2, 0, 0, 1, a) ];
+}
+
+.opcode ANDX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(2, 0, 1, 1, a) ];
+}
+
+.opcode ANDX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(2, 1, 0, 1, a) ];
+}
+
+.opcode ANDX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(2, 1, 1, 1, a) ];
+}
+
+.opcode XOR {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(3, 0, 0, 0, a) ];
+}
+
+.opcode XOR {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(3, 0, 1, 0, a) ];
+}
+
+.opcode XOR {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(3, 1, 0, 0, a) ];
+}
+
+.opcode XOR {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(3, 1, 1, 0, a) ];
+}
+
+.opcode XORX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(3, 0, 0, 1, a) ];
+}
+
+.opcode XORX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(3, 0, 1, 1, a) ];
+}
+
+.opcode XORX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(3, 1, 0, 1, a) ];
+}
+
+.opcode XORX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(3, 1, 1, 1, a) ];
+}
+
+.opcode DAC {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(4, 0, 0, 0, a) ];
+}
+
+.opcode DAC {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(4, 0, 1, 0, a) ];
+}
+
+.opcode DAC {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(4, 1, 0, 0, a) ];
+}
+
+.opcode DAC {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(4, 1, 1, 0, a) ];
+}
+
+.opcode DIX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(4, 0, 0, 1, a) ];
+}
+
+.opcode DIX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(4, 0, 1, 1, a) ];
+}
+
+.opcode DIX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(4, 1, 0, 1, a) ];
+}
+
+.opcode DIX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(4, 1, 1, 1, a) ];
+}
+
+.opcode LAC {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(5, 0, 0, 0, a) ];
+}
+
+.opcode LAC {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(5, 0, 1, 0, a) ];
+}
+
+.opcode LAC {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(5, 1, 0, 0, a) ];
+}
+
+.opcode LAC {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(5, 1, 1, 0, a) ];
+}
+
+.opcode LIX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(5, 0, 0, 1, a) ];
+}
+
+.opcode LIX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(5, 0, 1, 1, a) ];
+}
+
+.opcode LIX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(5, 1, 0, 1, a) ];
+}
+
+.opcode LIX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(5, 1, 1, 1, a) ];
+}
+
+.opcode SAD {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(6, 0, 0, 0, a) ];
+}
+
+.opcode SAD {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(6, 0, 1, 0, a) ];
+}
+
+.opcode SAD {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(6, 1, 0, 0, a) ];
+}
+
+.opcode SAD {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(6, 1, 1, 0, a) ];
+}
+
+.opcode SXD {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(6, 0, 0, 1, a) ];
+}
+
+.opcode SXD {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(6, 0, 1, 1, a) ];
+}
+
+.opcode SXD {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(6, 1, 0, 1, a) ];
+}
+
+.opcode SXD {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(6, 1, 1, 1, a) ];
+}
+
+.opcode IOR {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(7, 0, 0, 0, a) ];
+}
+
+.opcode IOR {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(7, 0, 1, 0, a) ];
+}
+
+.opcode IOR {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(7, 1, 0, 0, a) ];
+}
+
+.opcode IOR {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(7, 1, 1, 0, a) ];
+}
+
+.opcode IORX {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(7, 0, 0, 1, a) ];
+}
+
+.opcode IORX {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(7, 0, 1, 1, a) ];
+}
+
+.opcode IORX {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr MR(7, 1, 0, 1, a) ];
+}
+
+.opcode IORX {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr MR(7, 1, 1, 1, a) ];
+}
+
+.opcode CAL {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr JPC(8, a, .addr) ];
+}
+
+.opcode CAL {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(8, 0, 1, a) ];
+}
+
+.opcode CAL {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr JC(8, 1, 0, a) ];
+}
+
+.opcode CAL {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(8, 1, 1, a) ];
+}
+
+.opcode JMP {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr JPC(9, a, .addr) ];
+}
+
+.opcode JMP {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(9, 0, 1, a) ];
+}
+
+.opcode JMP {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr JC(9, 1, 0, a) ];
+}
+
+.opcode JMP {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(9, 1, 1, a) ];
+}
+
+.opcode ISZ {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr JC(10, 0, 0, a) ];
+}
+
+.opcode ISZ {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(10, 0, 1, a) ];
+}
+
+.opcode ISZ {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr JC(10, 1, 0, a) ];
+}
+
+.opcode ISZ {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(10, 1, 1, a) ];
+}
+
+.opcode DSZ {{ a }}
+.with ( a : Ints ) -> {
+    .out [ .expr JC(11, 0, 0, a) ];
+}
+
+.opcode DSZ {{ a , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(11, 0, 1, a) ];
+}
+
+.opcode DSZ {{ ( a ) }}
+.with ( a : Ints ) -> {
+    .out [ .expr JC(11, 1, 0, a) ];
+}
+
+.opcode DSZ {{ ( a ) , x }}
+.with ( a : Ints, x : XReg ) -> {
+    .out [ .expr JC(11, 1, 1, a) ];
+}
+
+// ---- IOT ----
+//  17..14  13..11  10..8   7..4   3    2     1     0
+//   1110   dev(3)  sub(3)  ----  CLA  IOP4  IOP2  IOP1
+.opcode IO {{ a }}
+.with ( a : Ints ) -> {
+    .out [ 0x38000 + a ];
+}
+
+.opcode SCROLL {{ }}
+.with ( ) -> {
+    .out [ 0x38804 ];
+}
+
+.opcode SKBSY {{ }}
+.with ( ) -> {
+    .out [ 0x38801 ];
+}
+
+.opcode SKRDY {{ }}
+.with ( ) -> {
+    .out [ 0x38901 ];
+}
+
+.opcode TARM {{ }}
+.with ( ) -> {
+    .out [ 0x39004 ];
+}
+
+.opcode TACK {{ }}
+.with ( ) -> {
+    .out [ 0x39104 ];
+}
+
+.opcode TLOAD {{ }}
+.with ( ) -> {
+    .out [ 0x39204 ];
+}
+
+.opcode SKIRQ {{ }}
+.with ( ) -> {
+    .out [ 0x39001 ];
+}
+
+.opcode KRAW {{ }}
+.with ( ) -> {
+    .out [ 0x3980A ];
+}
+
+.opcode KMOD {{ }}
+.with ( ) -> {
+    .out [ 0x3990A ];
+}
+
+.opcode SKKB {{ }}
+.with ( ) -> {
+    .out [ 0x39A01 ];
+}
+
+.opcode KACK {{ }}
+.with ( ) -> {
+    .out [ 0x39B04 ];
+}
+
+.opcode LEDS {{ }}
+.with ( ) -> {
+    .out [ 0x3A004 ];
+}
+
+.opcode IMRD {{ }}
+.with ( ) -> {
+    .out [ 0x3800A ];
+}
+
+.opcode IMWR {{ }}
+.with ( ) -> {
+    .out [ 0x38004 ];
+}
+
+.opcode IMSET {{ }}
+.with ( ) -> {
+    .out [ 0x38104 ];
+}
+
+.opcode IMCLR {{ }}
+.with ( ) -> {
+    .out [ 0x38204 ];
+}
+
+.opcode HTON {{ }}
+.with ( ) -> {
+    .out [ 0x3A804 ];
+}
+
+.opcode HTOFF {{ }}
+.with ( ) -> {
+    .out [ 0x3A904 ];
+}
+
+.opcode HOUT {{ }}
+.with ( ) -> {
+    .out [ 0x3AA04 ];
+}
+
+.opcode HACK {{ }}
+.with ( ) -> {
+    .out [ 0x3AB04 ];
+}
+
+// ---- OPR group 1: AC / L ----
+.opcode CLA {{ }}
+.with ( ) -> {
+    .out [ 0x3C800 ];
+}
+
+.opcode CLL {{ }}
+.with ( ) -> {
+    .out [ 0x3C400 ];
+}
+
+.opcode CMA {{ }}
+.with ( ) -> {
+    .out [ 0x3C200 ];
+}
+
+.opcode CML {{ }}
+.with ( ) -> {
+    .out [ 0x3C100 ];
+}
+
+.opcode RLA {{ }}
+.with ( ) -> {
+    .out [ 0x3C080 ];
+}
+
+.opcode RRA {{ }}
+.with ( ) -> {
+    .out [ 0x3C040 ];
+}
+
+.opcode SHA {{ }}
+.with ( ) -> {
+    .out [ 0x3C020 ];
+}
+
+.opcode SRA {{ }}
+.with ( ) -> {
+    .out [ 0x3C010 ];
+}
+
+.opcode IAC {{ }}
+.with ( ) -> {
+    .out [ 0x3C008 ];
+}
+
+.opcode IXC {{ }}
+.with ( ) -> {
+    .out [ 0x3C004 ];
+}
+
+.opcode HLT {{ }}
+.with ( ) -> {
+    .out [ 0x3C001 ];
+}
+
+.opcode NOP {{ }}
+.with ( ) -> {
+    .out [ 0x3C000 ];
+}
+
+.opcode CLC {{ }}
+.with ( ) -> {
+    .out [ 0x3CA00 ];
+}
+
+.opcode STL {{ }}
+.with ( ) -> {
+    .out [ 0x3C500 ];
+}
+
+.opcode CLAL {{ }}
+.with ( ) -> {
+    .out [ 0x3CC00 ];
+}
+
+.opcode CIA {{ }}
+.with ( ) -> {
+    .out [ 0x3C208 ];
+}
+
+.opcode LSR {{ }}
+.with ( ) -> {
+    .out [ 0x3C440 ];
+}
+
+.opcode LSL {{ }}
+.with ( ) -> {
+    .out [ 0x3C480 ];
+}
+
+.opcode GLK {{ }}
+.with ( ) -> {
+    .out [ 0x3C880 ];
+}
+
+.opcode ONEA {{ }}
+.with ( ) -> {
+    .out [ 0x3C808 ];
+}
+
+.opcode ONEX {{ }}
+.with ( ) -> {
+    .out [ 0x3C804 ];
+}
+
+// ---- OPR group 2: skips.  bit11 = invert, bits 2:0 = I,L,Z ----
+.opcode SKZ {{ }}
+.with ( ) -> {
+    .out [ 0x3D001 ];
+}
+
+.opcode SKNZ {{ }}
+.with ( ) -> {
+    .out [ 0x3D801 ];
+}
+
+.opcode SKL {{ }}
+.with ( ) -> {
+    .out [ 0x3D002 ];
+}
+
+.opcode SKNL {{ }}
+.with ( ) -> {
+    .out [ 0x3D802 ];
+}
+
+.opcode SKI {{ }}
+.with ( ) -> {
+    .out [ 0x3D004 ];
+}
+
+.opcode SKNI {{ }}
+.with ( ) -> {
+    .out [ 0x3D804 ];
+}
+
+.opcode SKP {{ }}
+.with ( ) -> {
+    .out [ 0x3D800 ];
+}
+
+// ---- OPR group 3: stack.  bit11 = pop, bits 10:9 = I field ----
+.inline G3
+.with ( d : Ints, ifield : Ints, mask : Ints ) -> {
+    .return 0x3E000 + ( d << 11 ) + ( ifield << 9 ) + mask;
+}
+
+.opcode PSH {{ r0 }}
+.with ( r0 : SReg ) -> {
+    .out [ .expr G3(0, 0, ( 1 << r0 )) ];
+}
+
+.opcode PSH {{ r0 , r1 }}
+.with ( r0 : SReg, r1 : SReg ) -> {
+    .out [ .expr G3(0, 0, ( 1 << r0 ) + ( 1 << r1 )) ];
+}
+
+.opcode PSH {{ r0 , r1 , r2 }}
+.with ( r0 : SReg, r1 : SReg, r2 : SReg ) -> {
+    .out [ .expr G3(0, 0, ( 1 << r0 ) + ( 1 << r1 ) + ( 1 << r2 )) ];
+}
+
+.opcode PSH {{ r0 , r1 , r2 , r3 }}
+.with ( r0 : SReg, r1 : SReg, r2 : SReg, r3 : SReg ) -> {
+    .out [ .expr G3(0, 0, ( 1 << r0 ) + ( 1 << r1 ) + ( 1 << r2 ) + ( 1 << r3 )) ];
+}
+
+.opcode POP {{ r0 }}
+.with ( r0 : SReg ) -> {
+    .out [ .expr G3(1, 0, ( 1 << r0 )) ];
+}
+
+.opcode POP {{ r0 , r1 }}
+.with ( r0 : SReg, r1 : SReg ) -> {
+    .out [ .expr G3(1, 0, ( 1 << r0 ) + ( 1 << r1 )) ];
+}
+
+.opcode POP {{ r0 , r1 , r2 }}
+.with ( r0 : SReg, r1 : SReg, r2 : SReg ) -> {
+    .out [ .expr G3(1, 0, ( 1 << r0 ) + ( 1 << r1 ) + ( 1 << r2 )) ];
+}
+
+.opcode POP {{ r0 , r1 , r2 , r3 }}
+.with ( r0 : SReg, r1 : SReg, r2 : SReg, r3 : SReg ) -> {
+    .out [ .expr G3(1, 0, ( 1 << r0 ) + ( 1 << r1 ) + ( 1 << r2 ) + ( 1 << r3 )) ];
+}
+
+.opcode RET {{ }}
+.with ( ) -> {
+    .out [ 0x3E802 ];
+}
+
+.opcode RTI {{ }}
+.with ( ) -> {
+    .out [ 0x3EC02 ];
+}
+
+.opcode EI {{ }}
+.with ( ) -> {
+    .out [ 0x3E400 ];
+}
+
+.opcode DI {{ }}
+.with ( ) -> {
+    .out [ 0x3E200 ];
+}
+

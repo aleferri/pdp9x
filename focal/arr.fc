@@ -1,0 +1,9 @@
+10 FOR I=0,9; SET A(I)=I*I
+20 TYPE "A(3) ", A(3), " A(9) ", A(9), !
+30 SET S=0
+40 FOR I=0,9; SET S=S+A(I)
+50 TYPE "SUM ", S, !
+60 SET K=2
+70 SET A(K+1)=99
+80 TYPE "A(3) NOW ", A(3), !
+90 QUIT
