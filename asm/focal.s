@@ -52,7 +52,6 @@ CTABP:  .dd    CTAB
 TXTP:   .dd    TEXT            ; the text being read, program or typed line
 TXTB:   .dd    TEXT            ; the stored program, always
 LBUFA:  .dd    LBUF
-VARSP:  .dd    VARS
 SCRP:   .dd    0x4000
 C512:   .dd    512
 C480:   .dd    480
@@ -105,7 +104,6 @@ KBIT:   .dd    8               ; the keyboard is device 3
 QMARK:  .dd    63              ; '?'
 ERRT:   .dd    84              ; ?T unknown type
 ERRF:   .dd    70              ; ?F float not implemented
-STRVB:  .dd    STRV
 SADDR:  .dd    0
 SADDR2: .dd    0
 SAT:    .dd    0
@@ -116,6 +114,45 @@ SNEG:   .dd    0
 SLNV:   .dd    0
 SSRC:   .dd    0
 CL:     .dd    76              ; 'L'
+CRR:    .dd    82              ; 'R'
+MZCHR:  .dd    -91             ; -('Z'+1)
+VPTRB:  .dd    VPTR
+TPTRB:  .dd    TPTR
+SPTRB:  .dd    SPTR
+APTRB:  .dd    APTR
+VLPT:   .dd    0
+VLSZ:   .dd    0
+VLB:    .dd    0
+VLT:    .dd    0
+VADR:   .dd    0
+VVAL:   .dd    0
+C26:    .dd    26
+C520:   .dd    520
+C416:   .dd    416
+C63:    .dd    63
+C37:    .dd    37
+HEAPBV: .dd    HEAPB
+HEAP:   .dd    HEAPB
+VPTR:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+TPTR:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+SPTR:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+APTR:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+C27:    .dd    27
+VN1:    .dd    0
+VN2:    .dd    0
+VNT:    .dd    0
+RSEED:  .dd    12345
+RMUL:   .dd    1229
+RINC:   .dd    1
+RMASK:  .dd    4095
 SCH2:   .dd    0
 CARET:  .dd    94              ; '^'
 COLON:  .dd    58
@@ -126,7 +163,6 @@ BRK:    .dd    0
 PBASE:  .dd    0
 PEXP:   .dd    0
 PRES:   .dd    0
-ARRB:   .dd    ARRV
 AADDR:  .dd    0
 SVARI:  .dd    0
 ASUB:   .dd    0
@@ -150,8 +186,6 @@ LBUF:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-VTYPE:  .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 KQ:     .dd    0
         .dd    0
         .dd    0
@@ -243,16 +277,6 @@ PNUMX:  POP     IX
 ; SADDR holds the address of the one being worked on, computed as
 ; base + 20*index with shifts, since 20 = 16 + 4.
 ; =====================================================================
-SVADDR: LAC     TMPV
-        SHA
-        SHA
-        DAC     SAT             ; 4n
-        SHA
-        SHA                     ; 16n
-        TAD     SAT             ; 20n
-        TAD     STRVB
-        DAC     SADDR
-        RET
 
 ; print the string at SADDR
 SPRINT: PSH     IX
@@ -607,6 +631,205 @@ LBQE:   CLA
         RET
 
 ; =====================================================================
+; Variables, two levels deep and allocated on demand.
+;
+; The second character of a name picks one of thirty-seven classes -- none, a
+; letter, a digit -- and each class owns a block of twenty-six entries, one per
+; first letter.  The class pointers live in the zero page and start empty; a
+; block is carved off the heap the first time a name in that class is used.  A
+; program that only writes A through Z therefore pays for twenty-six entries,
+; not for the whole cross product, and no name has to be multiplied out: two
+; indexed reads replace the stride arithmetic entirely.
+;
+; The four kinds are allocated separately, so a program with no strings never
+; pays for the twenty words per letter that strings would want.
+; =====================================================================
+; VLOOK: VLPT names a pointer table, VLSZ the size of one block.  Returns the
+; block base in AC, carving and clearing it if this class is new.
+VLOOK:  PSH     IX
+        LIX     VN2
+        LAC     (VLPT) , X
+        SKNZ
+        JMP     VLNEW
+        DAC     VLB
+        POP     IX
+        LAC     VLB
+        RET
+VLNEW:  LAC     HEAP
+        DAC     VLB
+        DAC     (VLPT) , X
+        LAC     HEAP
+        TAD     VLSZ
+        DAC     HEAP
+        LIX     NIL             ; a fresh block reads as zero
+        CLA
+VLCLR:  DAC     (VLB) , X
+        IXC
+        SXD     VLSZ
+        JMP     VLCD
+        JMP     VLCLR
+VLCD:   POP     IX
+        LAC     VLB
+        RET
+
+; the four kinds.  Each leaves an address, and only the strings and arrays need
+; a stride, because a value and a type are one word each.
+VGETA:  CAL     VUNP
+        LAC     VPTRB
+        DAC     VLPT
+        LAC     C26
+        DAC     VLSZ
+        CAL     VLOOK
+        TAD     VN1
+        RET
+
+VTYPA:  CAL     VUNP
+        LAC     TPTRB
+        DAC     VLPT
+        LAC     C26
+        DAC     VLSZ
+        CAL     VLOOK
+        TAD     VN1
+        RET
+
+; the string kind keeps SVADDR's old contract: the packed name is in TMPV
+VSTRA:  LAC     TMPV
+        CAL     VUNP
+        LAC     SPTRB
+        DAC     VLPT
+        LAC     C520
+        DAC     VLSZ
+        CAL     VLOOK
+        DAC     VLB
+        LAC     VN1
+        SHA
+        SHA
+        DAC     VLT             ; 4n
+        SHA
+        SHA                     ; 16n
+        TAD     VLT             ; 20n
+        TAD     VLB
+        DAC     SADDR
+        RET
+
+VARRA:  CAL     VUNP
+        LAC     APTRB
+        DAC     VLPT
+        LAC     C416
+        DAC     VLSZ
+        CAL     VLOOK
+        DAC     VLB
+        LAC     VN1
+        SHA
+        SHA
+        SHA
+        SHA                     ; 16n
+        TAD     VLB
+        DAC     AADDR
+        RET
+
+; read and write a numeric variable
+VGET:   CAL     VGETA
+        DAC     VADR
+        PSH     IX
+        LIX     NIL
+        LAC     (VADR) , X
+        POP     IX
+        RET
+VPUTV:  CAL     VGETA
+        DAC     VADR
+        PSH     IX
+        LIX     NIL
+        LAC     VVAL
+        DAC     (VADR) , X
+        POP     IX
+        RET
+VTGET:  CAL     VTYPA
+        DAC     VADR
+        PSH     IX
+        LIX     NIL
+        LAC     (VADR) , X
+        POP     IX
+        RET
+VTPUTV: CAL     VTYPA
+        DAC     VADR
+        PSH     IX
+        LIX     NIL
+        LAC     VVAL
+        DAC     (VADR) , X
+        POP     IX
+        RET
+
+; =====================================================================
+; VNAME: read a variable name at the text pointer, step past it, return its
+; index.  A letter, then optionally a letter or a digit, and only the first two
+; characters are significant -- FOCAL's own rule.  The second position takes
+; thirty-seven values: nothing, A to Z, 0 to 9.  The stride is forty rather
+; than thirty-seven because 40n is two shift chains and an add, while 37n needs
+; three.  The three wasted slots per letter cost less than the multiply.
+; =====================================================================
+VNAME:  LAC     (TXTP) , X
+        TAD     MACHR
+        DAC     VN1
+        IXC
+        CLA
+        DAC     VN2
+        LAC     (TXTP) , X
+        TAD     MACHR
+        CAL     SGNB
+        SKZ                     ; skip when the character is at least 'A'
+        JMP     VNDIG
+        LAC     (TXTP) , X
+        TAD     MZCHR
+        CAL     SGNB
+        SKNZ                    ; skip when it is at most 'Z'
+        JMP     VNDONE
+        LAC     (TXTP) , X
+        TAD     MACHR
+        IAC                     ; letters occupy 1 to 26
+        DAC     VN2
+        IXC
+        JMP     VNDONE
+VNDIG:  LAC     (TXTP) , X
+        TAD     M0C
+        CAL     SGNB
+        SKZ
+        JMP     VNDONE
+        LAC     (TXTP) , X
+        TAD     M0C
+        TAD     M10
+        CAL     SGNB
+        SKNZ
+        JMP     VNDONE
+        LAC     (TXTP) , X
+        TAD     M0C
+        TAD     C27             ; digits occupy 27 to 36
+        DAC     VN2
+        IXC
+VNDONE: LAC     VN2             ; packed as class*32 + letter, so the call
+        SHA                     ; sites can go on holding a single word
+        SHA
+        SHA
+        SHA
+        SHA
+        TAD     VN1
+        RET
+
+; unpack what VNAME made
+VUNP:   DAC     VLT
+        AND     C31
+        DAC     VN1
+        LAC     VLT
+        SRA
+        SRA
+        SRA
+        SRA
+        SRA
+        AND     C63
+        DAC     VN2
+        RET
+
+; =====================================================================
 ; text access.  IX is the text pointer for the whole interpreter: reading the
 ; current character is one instruction and advancing is one more, so the two
 ; hottest operations in the scanner cost no call at all.  A routine that needs
@@ -685,6 +908,9 @@ FFUNC:  IXC
         LAC     FSEL
         SAD     CI
         JMP     FNITR
+        LAC     FSEL
+        SAD     CRR
+        JMP     FNRAN
         LAC     FSEL2
         SAD     CG
         JMP     FNSGN
@@ -696,11 +922,9 @@ FFLEN:  IXC
         CAL     SKSP
         IXC                     ; the open parenthesis
         CAL     SKSP
-        LAC     (TXTP) , X
-        TAD     MACHR
+        CAL     VNAME
         DAC     TMPV
-        IXC
-        CAL     SVADDR
+        CAL     VSTRA
         CAL     SLENF
         DAC     SLNV
         CAL     SKSP
@@ -727,6 +951,32 @@ FNSGN:  LAC     FARG
 FNSGP:  CLA
         IAC
         RET
+; FRAN(n) is a random value in 0..n-1.  FOCAL's FRAN returns a fraction, which
+; an integer machine has no way to represent, so the argument gives the range
+; instead: a deliberate change, not an approximation of the original.
+FNRAN:  LAC     RSEED
+        DAC     M1
+        LAC     RMUL
+        DAC     M2
+        CAL     MUL
+        TAD     RINC
+        DAC     RSEED
+        SRA                     ; the low bits of an LCG are the weak ones
+        SRA
+        SRA
+        SRA
+        SRA
+        SRA
+        AND     RMASK
+        DAC     M1
+        LAC     FARG
+        SKNZ
+        RET                     ; FRAN(0) is zero, not a division by zero
+        DAC     M2
+        CAL     DIV
+        LAC     MREM
+        RET
+
 FNSQT:  LAC     FARG
         DAC     M1
         CAL     ABS1
@@ -734,23 +984,17 @@ FNSQT:  LAC     FARG
         LAC     MRES
         RET
 
-FVAR:   LAC     (TXTP) , X
-        TAD     MACHR
+FVAR:   CAL     VNAME
         DAC     TMPV
-        IXC
         LAC     (TXTP) , X
         SAD     LPAR
         JMP     FARR
-        PSH     IX              ; IX is the text pointer, borrow it
-        LIX     TMPV
-        LAC     VTYPE , X
-        POP     IX
+        LAC     TMPV
+        CAL     VTGET
         SKZ                     ; a string here reads as the number it spells
         JMP     FVARS
-        PSH     IX
-        LIX     TMPV
-        LAC     (VARSP) , X
-        POP     IX
+        LAC     TMPV
+        CAL     VGET
         RET
 FARR:   LAC     TMPV
         DAC     SVARI
@@ -766,7 +1010,7 @@ FARR:   LAC     TMPV
         POP     IX
         RET
 
-FVARS:  CAL     SVADDR
+FVARS:  CAL     VSTRA
         CAL     SVNUM
         RET
 
@@ -815,14 +1059,10 @@ SVND:   POP     IX
 SVNP:   LAC     NUM
         RET
 
-; AVADDR: address of element TMPV of array SVARI, sixteen elements each
+; the address of element TMPV of the array named by SVARI
 AVADDR: LAC     SVARI
-        SHA
-        SHA
-        SHA
-        SHA                     ; 16 per variable
+        CAL     VARRA
         TAD     TMPV
-        TAD     ARRB
         DAC     AADDR
         RET
 
@@ -1061,10 +1301,8 @@ BODY:   CAL     SKSP
 DOSET:  LIX     TPSAVE
         CAL     SKIPW
         CAL     SKSP
-        LAC     (TXTP) , X
-        TAD     MACHR
+        CAL     VNAME
         DAC     SVAR            ; not TMPV: the evaluator uses that one
-        IXC
         LAC     (TXTP) , X
         SAD     LPAR
         JMP     DOSARR
@@ -1131,11 +1369,10 @@ DECLS:  CLA
 DECLF:  LAC     ERRF            ; float has no implementation to declare
         JMP     ERROR
 DECLST: DAC     SCH
-        PSH     IX
-        LIX     SVAR
         LAC     SCH
-        DAC     VTYPE , X
-        POP     IX
+        DAC     VVAL
+        LAC     SVAR
+        CAL     VTPUTV
         RET
 
 ; ?x and stop, because a wrong declaration cannot be shrugged off the way an
@@ -1157,19 +1394,14 @@ ERROR:  DAC     SCH
 
 DOSASN: IXC                     ; the equals sign
         CAL     SKSP
-        PSH     IX
-        LIX     SVAR
-        LAC     VTYPE , X
-        POP     IX
+        LAC     SVAR
+        CAL     VTGET
         SKZ                     ; skip when the type is integer
         JMP     DOSSTR
         CAL     EXPR            ; integer: the ordinary path
-        PSH     IX
-        PSH     AC
-        LIX     SVAR
-        POP     AC
-        DAC     (VARSP) , X
-        POP     IX
+        DAC     VVAL
+        LAC     SVAR
+        CAL     VPUTV
         CAL     EOS
         RET
 
@@ -1177,7 +1409,7 @@ DOSASN: IXC                     ; the equals sign
 ; variable, or a number to be spelled out
 DOSSTR: LAC     SVAR
         DAC     TMPV
-        CAL     SVADDR
+        CAL     VSTRA
         LAC     (TXTP) , X
         SAD     QUOTE
         JMP     SETSL
@@ -1204,23 +1436,20 @@ DOSSTR: LAC     SVAR
 ; A bare variable on the right: copy it when it is itself a string, spell it
 ; out when it is an integer.  The source's declared type decides, not the
 ; destination's.
-SETSB:  LAC     (TXTP) , X
-        TAD     MACHR
+SETSB:  PSH     IX
+        CAL     VNAME
         DAC     SCH2
-        PSH     IX
-        LIX     SCH2
-        LAC     VTYPE , X
         POP     IX
+        LAC     SCH2
+        CAL     VTGET
         SKZ                     ; skip when the source is an integer
         JMP     SETSV
         JMP     SETSN
-SETSV:  LAC     (TXTP) , X
-        TAD     MACHR
+SETSV:  CAL     VNAME
         DAC     TMPV
-        IXC
         LAC     SADDR
         PSH     AC
-        CAL     SVADDR
+        CAL     VSTRA
         LAC     SADDR
         DAC     SADDR2          ; source
         POP     AC
@@ -1314,19 +1543,16 @@ DOTYL:  CAL     SKSP
         LAC     (TXTP) , X      ; A variable declared as a string prints as
         TAD     MACHR           ; text when it stands alone.  Followed by an
         CAL     SGNB            ; operator it is arithmetic on the number the
-        SKZ                     ; text spells, so one character is looked at.
-        JMP     DOTYN
-        LAC     (TXTP) , X
-        TAD     MACHR
+        SKZ                     ; text spells.  A name is one or two characters,
+        JMP     DOTYN           ; so the only way back is to remember where it
+        PSH     IX              ; began rather than to step back by one.
+        CAL     VNAME
         DAC     TMPV
-        IXC
         LAC     (TXTP) , X
         DAC     SCH
-        TADX    MONE
-        PSH     IX
-        LIX     TMPV
-        LAC     VTYPE , X
         POP     IX
+        LAC     TMPV
+        CAL     VTGET
         SKNZ
         JMP     DOTYN           ; an integer: evaluate it
         LAC     SCH
@@ -1345,11 +1571,9 @@ DOTYL:  CAL     SKSP
 DOTYN:  CAL     EXPR
         CAL     PNUM
         JMP     DOTYC
-DOTYSV: LAC     (TXTP) , X
-        TAD     MACHR
+DOTYSV: CAL     VNAME
         DAC     TMPV
-        IXC
-        CAL     SVADDR
+        CAL     VSTRA
         CAL     SPRINT
         JMP     DOTYC
 DOTYB:  IXC
@@ -1450,17 +1674,24 @@ DOWR2:  POP     IX
         RET
 
 ; ERASE: clear every variable
+; ERASE drops every block instead of walking every variable: the class
+; pointers go empty and the heap rewinds, which is the whole of it.
 DOERAS: LIX     TPSAVE
         CAL     EOL
         PSH     IX
         LIX     NIL
         CLA
-DOER1:  DAC     (VARSP) , X
+DOER1:  DAC     (VPTRB) , X
+        DAC     (TPTRB) , X
+        DAC     (SPTRB) , X
+        DAC     (APTRB) , X
         IXC
-        SXD     C26
+        SXD     C37
         JMP     DOER2
         JMP     DOER1
-DOER2:  POP     IX
+DOER2:  LAC     HEAPBV
+        DAC     HEAP
+        POP     IX
         RET
 
 ; DO n: run line n as a subroutine, then carry on after the DO.
@@ -1486,28 +1717,21 @@ DODO:   LIX     TPSAVE
 DOASK:  LIX     TPSAVE
         CAL     SKIPW
 DOASKL: CAL     SKSP
-        LAC     (TXTP) , X
-        TAD     MACHR
+        CAL     VNAME
         DAC     SVAR
-        IXC
         LAC     SVAR            ; FOCAL prompts with the name and a colon
         TAD     CACHR
         CAL     PUTC
         LAC     COLON
         CAL     PUTC
-        PSH     IX
-        LIX     SVAR
-        LAC     VTYPE , X
-        POP     IX
+        LAC     SVAR
+        CAL     VTGET
         SKZ                     ; skip when the type is integer
         JMP     ASKSTR
         CAL     RDKEY           ; blocks until a full number arrives
-        PSH     IX
-        PSH     AC
-        LIX     SVAR
-        POP     AC
-        DAC     (VARSP) , X
-        POP     IX
+        DAC     VVAL
+        LAC     SVAR
+        CAL     VPUTV
 DOASKC: CAL     SKSP
         LAC     (TXTP) , X
         SAD     COMMA
@@ -1520,7 +1744,7 @@ DOASKM: IXC
 ; ASK v$ reads a whole line of text, not a number
 ASKSTR: LAC     SVAR
         DAC     TMPV
-        CAL     SVADDR
+        CAL     VSTRA
         CLA
         DAC     SOFF
 ASKSL:  CAL     GETK
@@ -1723,10 +1947,8 @@ EOSS:   IXC
 DOFOR:  LIX     TPSAVE
         CAL     SKIPW
         CAL     SKSP
-        LAC     (TXTP) , X
-        TAD     MACHR
+        CAL     VNAME
         DAC     FVARI
-        IXC
         CAL     SKSP
         IXC                     ; the equals sign
         CAL     EXPR
@@ -1767,10 +1989,9 @@ FORL:   LAC     FLIM            ; continue while limit - current agrees in
         JMP     FORGO
         JMP     FORD
 FORGO:  LAC     FCUR            ; publish the loop variable, then run the body
-        PSH     IX
-        LIX     FVARI
-        DAC     (VARSP) , X
-        POP     IX
+        DAC     VVAL
+        LAC     FVARI
+        CAL     VPUTV
         LIX     FBODY
         CAL     BODY
         LAC     FCUR
@@ -1822,15 +2043,8 @@ CLS:    DAC     (SCRP) , X
 CLSD:   CLA
         DAC     CURS
         DAC     TMPV
-CLV:    LIX     TMPV            ; clear the 26 variables
-        CLA
-        DAC     (VARSP) , X
-        ISZ     TMPV
-        NOP
-        LAC     TMPV
-        SAD     C26
-        JMP     CLVD
-        JMP     CLV
+; nothing to clear: the class pointers start empty and a block is cleared
+; when it is carved, so a fresh variable reads as zero by construction
 CLVD:   EI                      ; the keyboard reaches us through irq1
         PSH     IX
         LIX     NIL
@@ -1880,14 +2094,15 @@ CTAB:
         JMP     CUNK    ; 30  .
         JMP     CUNK    ; 31  .
 
-        .advance 0x2E00
-VARS:   .advance 0x2E20
 
         .advance 0x2E40
         .include "program.s"
 
-        .advance 0x3400
-STRV:   .advance 0x3610         ; 26 strings of 20 words
+; above the framebuffer, which SCRP puts at 0x4000.  The index is now a letter
+; times forty plus the second character, so every table has 1040 entries.
+; The heap, above the framebuffer at 0x4000.  Blocks are carved off it as
+; classes of names appear, so what is used is what is spent.
+        .advance 0x4400
+HEAPB:  .advance 0x10000
 
-        .advance 0x3800
-ARRV:   .advance 0x3A00         ; 26 arrays of 16 words
+

@@ -215,6 +215,35 @@ def console():
         "line editing failed"
     assert rows[11:13] == ["ONE", "TWO BIS"], "running the typed program failed"
 
+    # Two programs that are historical rather than synthetic.  Hamurabi began
+    # as The Sumer Game, in FOCAL on a PDP-8 in 1968; Jim Storer's Lunar
+    # Landing Game was FOCAL on a PDP-8 in 1969.  Both were converted to BASIC
+    # by David Ahl afterwards, which is how most people met them.
+    m = Machine(load('bin/focal_twoch.bin'))
+    m.reset()
+    st = m.run(limit=30_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("two-character names: %s" % " | ".join(rows[:5]))
+    assert st == "halt" and rows[0] == "A 1 A1 2 A2 3 AB 4 B 5", "two-char names failed"
+    assert rows[3].endswith("19 ATTESO 19"), "FOR with a two-character index failed"
+
+    m = Machine(load('bin/focal_hamurabi.bin'))
+    m.reset()
+    m.kbd_input = [(c, 0) for c in '0\n1900\n900\n' * 12]
+    st = m.run(limit=40_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    verdict = [r for r in rows if 'DEPOST' in r or 'GOVERNATO' in r or 'RICORDA' in r]
+    print("hamurabi: %d instructions, verdict %r" % (m.instrs, verdict[0] if verdict else None))
+    assert st == "halt" and verdict, "hamurabi did not reach a verdict"
+
+    m = Machine(load('bin/focal_lunar.bin'))
+    m.reset()
+    m.kbd_input = [(c, 0) for c in '0\n0\n0\n' + '18\n' * 12]
+    st = m.run(limit=40_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("lunar: %s / %s" % (rows[-2] if len(rows) > 1 else '?', rows[-1]))
+    assert st == "halt" and any('PERFETTO' in r for r in rows), "lunar did not land"
+
     m = Machine(load('bin/focal_loop.bin'))
     m.reset()
     st = m.run(limit=20_000_000)

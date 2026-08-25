@@ -26,13 +26,13 @@ Python 3.8 or later, no dependencies.
 Assembly is done with [casmeleon](https://github.com/aleferri/casmeleon), a
 retargetable assembler in Go by aleferri:
 
-Two patches in `patches/` are required; both are small and upstreamable.
+Nothing needs patching any more. The two changes this machine used to carry in
+`patches/` — the `.dd` directive and backslash escapes in quoted literals —
+were merged upstream in `6af03b3`, so a plain checkout builds:
 
 ```
 git clone --depth 1 https://github.com/aleferri/casmeleon
 cd casmeleon
-patch -p1 < ../patches/casmeleon-string-escapes.patch
-patch -p1 < ../patches/casmeleon-dd-directive.patch
 GOPROXY=direct GOSUMDB=off GOFLAGS=-mod=mod go get github.com/aleferri/casmvm@v0.2.9
 GOPROXY=direct GOSUMDB=off go build -o casmeleon ./cmd/casmeleon
 ```
@@ -51,17 +51,18 @@ memory reference address outside the 11 bit zero page, value 16384
 CAL/JMP direct is PC-page relative: target is in another 4K page, value 16384
 ```
 
-`casmeleon-dd-directive.patch` adds `.dd`, which deposits at the width the
-target actually uses. `.db` and `.dw` are fixed at 8 and 16 bits regardless of
-`-byteSize`, so an 18-bit machine previously had to route every data word
-through a pseudo opcode. `.dd` takes numbers, negatives, labels and quoted
-strings, so `WORD` and `NWORD` are gone.
+The `.dd` directive deposits at the width the target actually uses. `.db` and
+`.dw` are fixed at 8 and 16 bits regardless of `-byteSize`, so an 18-bit
+machine previously had to route every data word through a pseudo opcode. `.dd`
+takes numbers, negatives, labels and quoted strings, so `WORD` and `NWORD` are
+gone.
 
-`casmeleon-string-escapes.patch` adds backslash escapes to quoted literals.
-The scanner had none: a `"` opened a literal and the next `"` closed it, so a
-string could never contain one. It now honours `\\`, `\"`, `\n`, `\r`, `\t`
-and `\0`, with an unknown escape yielding the character itself so a stray
-backslash is never silently dropped.
+Backslash escapes in quoted literals matter because a FOCAL program is
+embedded into the assembly as a string and its own `TYPE "..."` statements are
+full of quotes. The scanner used to have none: a `"` opened a literal and the
+next `"` closed it, so a string could never contain one. It now honours `\\`,
+`\"`, `\n`, `\r`, `\t` and `\0`, with an unknown escape yielding the character
+itself so a stray backslash is never silently dropped.
 
 Then, from this directory:
 
@@ -79,8 +80,8 @@ editing it:
 
 - Opcode arguments are **single tokens**. No expressions, no negative
   literals — hence the `NWORD` pseudo-opcode for negative constants.
-- `.db` and `.dw` stay 8 and 16 bits wide even at `-byteSize=32`; `.dd`, added
-  by the patch, follows the byte size.
+- `.db` and `.dw` stay 8 and 16 bits wide even at `-byteSize=32`; `.dd` follows
+  the byte size.
 - Every `.set` member needs a trailing `;`, **including the last one**.
   Omitting it reports only `Unexpected Error`, with no line number.
 - `.include` resolves relative to the **including file**, not the working
@@ -163,6 +164,34 @@ parentheses, unary minus, subscripted variables `A(i)` and the functions
 `FABS`, `FSGN`, `FITR`, `FSQT`, `FLEN`. `IF` takes one, two or three targets
 and falls through when the arm it wants is not there. `ASK` prompts with the
 variable name and a colon. Control C stops a running program with `?C`.
+
+### Two programs that are not benchmarks
+
+**Hamurabi** began life as *The Sumer Game*, in FOCAL on a PDP-8 in 1968, and
+**Lunar** is Jim Storer's Lunar Landing Game, FOCAL on a PDP-8 in the autumn of
+1969 — written by a high school student weeks after Apollo 12 launched, sent to
+the DEC users' newsletter, and from there into a whole genre. David Ahl
+converted both to BASIC afterwards, which is how most people met them. They are
+here because they are the two historical programs that were *native* to the
+language this machine runs.
+
+Both needed `FRAN`, which on an integer machine cannot return a fraction the way
+FOCAL's does: `FRAN(n)` gives a value in `0..n-1` instead. A linear
+congruential generator, with the low bits shifted away because those are the
+weak ones.
+
+Hamurabi ran unchanged in spirit — bushels, acres and population are integers,
+which is why it was the easier of the two. Lunar was not, and the reason is
+worth stating precisely. In millimetres per second the velocity of a 370 second
+lunar fall is 599000, and **an 18-bit word stops at 131071**: the velocity
+wrapped and the lander drifted. Centimetres per second put the ceiling at
+1310 m/s and it flies correctly — free fall reaches 8200 cm/s at 50 seconds,
+which is 1.62 m/s² times 50, and a computed profile lands at exactly the 100
+cm/s threshold.
+
+That is the clearest argument yet for the 36-bit floating point that is still
+missing. Not that integers are imprecise — that a real trajectory does not fit
+in the word.
 
 ### Command level
 
@@ -287,6 +316,38 @@ FOCAL has exactly one type, floating point: variables hold it, expressions
 evaluate to it, and line numbers *are* it, which is why `1.10` works and why
 `DO 1` can mean "the whole of group 1". Replacing that single type with 18-bit
 integers is therefore not a missing feature, it is a different language.
+
+Variable names are a letter, optionally followed by a letter or a digit, with
+only the first two characters significant — FOCAL's own rule.
+
+The lookup is **two levels deep and allocated on demand**, because the flat
+cross product was 36556 words for tables that almost every program leaves
+empty. The second character picks one of thirty-seven classes — none, a letter,
+a digit — and each class owns a block of twenty-six entries, one per first
+letter. The class pointers live in the zero page and start empty; a block is
+carved off the heap the first time a name in that class is used. The four kinds
+are allocated separately, so a program with no strings never pays for the twenty
+words per letter that strings would want.
+
+| program | heap used | of the flat 36556 |
+|---|---|---|
+| Hamurabi, Lunar | 52 | 0.1% |
+| subscripts | 468 | 1.3% |
+| declared types | 598 | 1.6% |
+| two-character names | 1248 | 3.4% |
+
+The scheme also **removed the multiply**: a flat index needed `40n` computed
+with five shifts, while two indexed reads need none. `ERASE` got shorter too —
+it drops every block by emptying the class pointers and rewinding the heap
+instead of walking every variable, and the reset clears nothing at all, because
+the pointers start empty and a block is cleared when it is carved.
+
+Reading a name is one subroutine, `VNAME`, rather than the nine copies it used
+to be. That mattered more than the duplication suggested: two places
+disambiguate a bare string variable from an expression beginning with one, and
+both did it by peeking one character ahead and stepping back with `TADX MONE`. A
+name that can be two characters long breaks that, so they now remember where the
+name started and return to it.
 
 A second type is added by **declaration** rather than by a suffix. BASIC put the
 type in the spelling of the name — `A$` for a string, `A%` for an integer — but

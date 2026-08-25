@@ -18,7 +18,7 @@ the control store can be blown from the same tooling as everything else.
 | `ASRC` | 3 | bus A source: none, `AC`, `IX`, `SP`, `T`, `PC` |
 | `BSRC` | 2 | bus B source: `DI`, `IR[11:0]`, zero |
 | `ALU` | 4 | add, and, or, xor, pass A, shift left, shift right arithmetic, rotate left, rotate right, complement A |
-| `CIN` | 1 | carry in |
+| `DOSRC` | 2 | `DO` input: hold, the register `IR[11]` names, `{L,PC}`, ALU |
 | `RDST` | 3 | bus R destination: none, `AC`, `IX`, `SP`, `T`, `PC`, `DO` |
 | `LCTL` | 2 | `L`: hold, load `ALU_L`, load `DI[17]` |
 | `ARSRC` | 3 | `AR`: hold, ALU, `PC`, `DI`, `{PC[16:12], IR[11:0]}`, stack page |
@@ -27,9 +27,31 @@ the control store can be blown from the same tooling as everything else.
 | `ICTL` | 2 | `I`: hold, clear, set |
 | `SEQ` | 3 | next, jump, map, map2, mapmask, branch, fetch |
 | `CC` | 3 | which condition the branch tests |
-| `NA` | 7 | next microaddress |
+| `NA` | 6 | next microaddress |
 
-Control store **128 × 36**. Two small map ROMs, below.
+Control store **64 × 36**, of which 44 are used. Two small map ROMs, below.
+`ucode.py` assembles it, emits the ROM images as the base64 LogicCircuit wants,
+and contains an engine that executes them.
+
+The field list is not what it was before the engine existed. Four things
+changed, all of them because writing the microprogram made them impossible to
+leave vague:
+
+**`DO` has a source select of its own, two bits.** Not a bus tap: during an
+indexed effective address bus A carries `IX`, so a store could not capture the
+value it means to write. `DAC v,X` would have written the index.
+
+**`PC` loads from the `AR` mux output**, not from bus R. A jump wants the
+address it has just formed, and `AR` is on no bus. This is also why a jump
+loads `PC` and `AR` in one cycle rather than two.
+
+**The ALU exposes carry and overflow both, and the `FROMIR` decode picks which
+one drives `L`.** That is the entire difference between `TAD` and `TAS`, and it
+is not expressible in the four-bit function field: the field says "read the
+function out of the opcode", and reading it out includes reading which flag.
+
+**The carry-in folded into the function field** and `NA` dropped to six bits,
+which is what paid for `DOSRC`.
 
 ### How the tail folds, and where it cannot
 
@@ -238,6 +260,172 @@ microprogram: one microinstruction, one cycle, whatever the mask holds.
 | `SKL` not taken | 1 + 1 = **2** | 1 + 1 = 2 |
 | `SAD` either way | 1 + 1 + 1 + 1 = **4** | 4, after the correction below |
 | interrupt entry | **5** | 4 + 1 = 5 |
+
+### Checked, not asserted
+
+`ucode.py` runs the control store against a memory and is compared with
+`sim.py` instruction by instruction. On the sieve: **194392 instructions, no
+divergence, memory identical, both print 1899.**
+
+The comparison has to lag by one instruction, because the fold means the
+architectural state of instruction *N* only settles during the fetch of *N+1*.
+That is a property of the design, not of the harness.
+
+Five bugs surfaced this way, all of them in the microprogram rather than in
+`sim.py`: `FETCH_A` was not driving the register onto bus A, so everything but
+`LAC` computed with a zero operand; `JMP` was taking `PC` from `DI`; `TAS` was
+reporting carry; `IOT` had no microinstruction; and `DO` had no way to be
+loaded at all.
+
+### The cycle counts agree
+
+**514775 microcycles against 514770.** Five cycles of difference over 194392
+instructions, which is the reset sequence.
+
+Getting there took undoing a mistake of mine. `FETCH` did not set `AR` itself;
+it relied on the terminal microinstruction of the instruction before to leave
+`AR` holding `PC`. With that invariant an instruction which never touches `AR`
+still has to spend a cycle moving it, so operate cost two cycles and the model
+looked optimistic by 16%.
+
+The fix is that **every fetch points `AR` at the word after the one it read**.
+Then a fetch is self-sufficient, and anything that needs no operand folds into
+the fetch after it:
+
+- `FETCH_G` is the fetch that also applies a group 1 operate. One cycle.
+- `FETCH_S` is the fetch that also resolves a group 2 skip. It reads the next
+  word speculatively and, when the condition turns out to hold, suppresses the
+  `IR` load — the same mechanism the interrupt check already uses. Not taken
+  costs nothing, taken costs one.
+
+`AR` is then only needed where an address must survive a cycle: `ISZ` and `DSZ`,
+which read, compute, and write back to the same place while the ALU is busy, and
+the stack, whose address is `SP` with the page forced. Indirection does not need
+it, because `DI` is a source of the `AR` mux in its own right.
+
+The page concatenation takes its five high bits from a latch loaded during the
+fetch, before the increment. `PC` has already moved on by the time the address
+cycle runs, and at a page boundary it would give the wrong page — the bug this
+whole design decision exists to avoid.
+
+### The stack group
+
+Progressive reduction, and nothing more: the dispatch picks a bit of `MSK`,
+clears it, runs the two cycles for that register and comes straight back, so
+the cost is the population count. The priority encoder takes the lowest set bit
+for a push and the highest for a pop, which is where `PSH m ; POP m` becomes
+the identity in hardware rather than in the simulator.
+
+**Push is verified on all fifteen masks**: the right words in the right order,
+`SP` at the highest address and `AC` at the lowest, and `PSH SP` writing the
+value `SP` held when the instruction began rather than the decremented one.
+That last point needed the `DO` select to read the register file *before* the
+cycle's writes, which is what hardware does anyway and what my engine was
+getting wrong.
+
+`CAL` pushes first and forms the target afterwards, so it needs nowhere to keep
+it: the four address sequences already load `PC`, and `CAL` reuses them. Four
+short sequences, one per addressing mode, because only the exit differs.
+
+**Pop costs three cycles per register, not two.** The address, the read, and
+the transfer: a word read from memory reaches `DI` at the clock edge, so it can
+only leave for a register the cycle after. `sim.py` was charging two and has
+been corrected; the cost is 833 cycles on FOCAL and 8834 on the loop
+benchmark, both in interrupt prologues, and nothing at all on the sieve, which
+never touches the stack.
+
+Forming the stack address had to come off the ALU for this to work at all —
+`{00001, SP}` is a concatenation, and computing it through the adder left
+nothing free for the transfer. `ARSRC` gained a second stack source: the
+decremented `SP` from the ALU for a push, the register as it stands for a pop.
+
+**Push is two cycles per register and matches the model**, and the two cycles
+of fixed overhead the group used to carry are gone. The dispatch is answered by
+the priority encoder in the fetch's own cycle rather than by a microinstruction
+of its own, and the `I` field rides on every stack cycle instead of needing an
+epilogue — it is idempotent, so applying it four times costs nothing.
+
+This is the third time the same constraint has shaped the design: it made `SAD`
+cost four, it forced the operate group to fold into the fetch, and now it makes
+a pop longer than a push. **A value read from memory is available one cycle
+later, and the only way to hide that is to overlap with the next fetch.** Where
+there is a next fetch to overlap with, it is free; where there is not, it costs.
+
+`CAL` and `RET` are exercised: the call returns to the word after itself with
+`L` and `SP` restored, and `PSH m ; POP m` is the identity on all eight masks
+that do not contain `LPC` — the two that do reload `PC`, so the pair is not a
+no-op by construction.
+
+### The RTL, and what it caught
+
+`rtl/` is a Verilog 2005 model for iverilog. The field positions and every
+symbolic value come from `ufields.vh`, which `ucode.py hex` generates alongside
+the ROM images, so the RTL never writes a bit offset by hand and cannot drift
+away from the microassembler: change a field width and the Verilog recompiles
+against the new one.
+
+```
+make        build and run the sieve
+make trace  dump cycles for comparison with the Python engine
+make hex    regenerate the ROMs
+```
+
+It prints `OUT 1899` and halts in 514776 cycles, against 514775 for the Python
+engine and 514770 for `sim.py`.
+
+Writing it caught two bugs in the Verilog itself — `SEQ_SKIPC` translated as a
+sequencer jump without the conditional `PC` step, so `SAD` never skipped, and
+the datapath registers left unreset, so `L` started undefined and poisoned
+`TAS`.
+
+It also caught one in the microprogram, which matters more because both engines
+shared it. **`ISZ` never skipped.** When the `PCINC` field was removed in favour
+of deriving the increment from `ARSRC=PCNEXT`, the substitution stripped
+`PCINC` from the `SKIP` microinstruction too, leaving it to move `AR` without
+stepping `PC`. The sieve ran correctly and then looped: its outer `ISZ ITER`
+never fell through, so the whole sieve ran six times and never reached the
+`HLT`.
+
+The comparison that found it was not the instruction-by-instruction one, which
+had been passing all along while comparing three registers out of five and
+skipping `PC` because the fold makes `PC` an instruction ahead by construction.
+It was **the list of memory writes in order**: 35903 of them from `sim.py`,
+matching the first 35903 of 211174 from the microcode. Same writes, six times
+over. A comparison that is independent of the pipeline shape found in one run
+what a state comparison had hidden for several.
+
+### Interrupt entry
+
+Five cycles, matching `sim.py`, and traced through: the fetch that detects the
+request suppresses the `IR` load and the increment, so `PC` still names the
+instruction thrown away and that is what gets pushed. `I` is cleared on the
+same cycle the stack address is formed. The vector entry is the device number,
+which comes from the priority encoder and so needed a bus source of its own —
+`BSRC` had one slot free.
+
+`RTI` restores `PC`, `L`, `SP` and `I`, and the machine re-enters the handler
+immediately afterwards, which is correct: the test never acknowledges, so the
+request is still up. That is the interrupt storm from earlier in the project,
+reproduced by the microcode for the same reason.
+
+`EI` and `DI` needed a fix that is worth recording, because it came from an
+optimisation. The `I` field had been moved onto the stack cycles so the group
+would not need an epilogue — but `EI` and `DI` are exactly the empty-mask case,
+where there are no stack cycles. The answer was the same shape as everything
+else here: **`FETCH_I` is the fetch that also applies the `I` field**, so an
+empty mask costs one cycle and the epilogue disappears for good.
+
+A fuller test — save context, acknowledge, restore, return — does **not** pass
+yet. The entry and the return are each verified in isolation; the combination
+of a two-register push and pop pair inside a handler leaves `SP` one short. Not
+isolated.
+
+### Width
+
+The stack group pushed the microword from 36 bits to **37**: `DOSRC` needs three
+bits once it selects `AC`, `IX`, `SP`, `{L,PC}` and the ALU separately, and `NA`
+needs seven for 74 microinstructions. Two ROMs of 128 × 24 hold it with eleven
+bits spare, and 24 is the width the project already uses for its microcode.
 
 They agree everywhere except `SAD` and `SXD`, where writing the microcode
 showed the simulator was charging three cycles for something that cannot be

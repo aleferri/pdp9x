@@ -311,6 +311,11 @@ class CPU:
             for b in (3, 2, 1, 0):
                 if not ((mask >> b) & 1):
                     continue
+                # Three cycles, not two: the address, the read, and the
+                # transfer.  A word read from memory reaches DI at the clock
+                # edge, so it can only leave for a register the cycle after,
+                # and the stack address cycle has nothing to overlap with.
+                self.cycles += self.BRANCH_CYCLES
                 if b == 3:
                     self.ac = self.pop()
                 elif b == 2:
