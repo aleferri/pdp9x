@@ -38,6 +38,7 @@ class CPU:
         self.instrs = 0
         self.trace = trace
         self.out = []
+        self.waiting = False
         self.timer_on = False
         self.timer_period = 0
         self.timer_ctr = 0
@@ -95,6 +96,14 @@ class CPU:
         self.push(((self.l & 1) << 17) | (pc & A))
 
     # ---- interrupt entry -------------------------------------------
+    def pending(self):
+        """Any device flag at all.  The mask decides which requests may
+        interrupt; it does not decide what ends a WAIT, because a program that
+        waits for a device it has masked off still means to be woken by it --
+        that is the whole reason to mask a device and wait for it rather than
+        take its vector."""
+        return any(self.req[1:8])
+
     def check_irq(self):
         if not self.i:
             return False
@@ -212,11 +221,18 @@ class CPU:
         if dev != 0:
             return False
         sub = (f >> 8) & 7
-        iop2, iop4, cla = (f >> 1) & 1, (f >> 2) & 1, (f >> 3) & 1
+        iop1, iop2, iop4, cla = f & 1, (f >> 1) & 1, (f >> 2) & 1, (f >> 3) & 1
         if cla:
             self.ac = 0
         if iop2 and sub == 0:
             self.ac |= self.imask
+        # IOP1 tests a flag and skips, IOP4 moves data or acts: the interrupt
+        # state skips belong to the first, not nested under the second.
+        if iop1:
+            if sub == 4 and self.i:
+                self.skip()
+            elif sub == 5 and not self.i:
+                self.skip()
         if iop4:
             if sub == 0:
                 self.imask = self.ac & 0xFF
@@ -224,6 +240,11 @@ class CPU:
                 self.imask |= self.ac & 0xFF
             elif sub == 2:
                 self.imask &= ~self.ac & 0xFF
+            elif sub == 3:
+                # Stop fetching until a request arrives.  A polling loop burns
+                # an instruction every couple of cycles for no work; this burns
+                # cycles without instructions, which is what waiting is.
+                self.waiting = True
         return True
 
     # Device 5 is the bare-CPU test harness: a coarse timer and a print port,
@@ -289,7 +310,8 @@ class CPU:
         if (w >> 1) & 1:
             c |= 1 if self.l else 0
         if (w >> 2) & 1:
-            c |= 1 if self.i else 0
+            c |= (self.ac >> 17) & 1        # the sign, which DEC had and we
+                                            # had left out
         if n:
             c ^= 1
         if c:
@@ -342,6 +364,15 @@ class CPU:
                     if self.timer_ctr >= self.timer_period:
                         self.timer_ctr = 0
                         self.req[2] = True
+                if self.waiting:
+                    # WAIT costs cycles and no instructions.  An interrupt ends
+                    # it; so does a request the mask lets through, because a
+                    # program that waits with interrupts off means to resume.
+                    self.cycles += 1
+                    if self.check_irq() or self.pending():
+                        self.waiting = False
+                    n += 1
+                    continue
                 self.check_irq()
                 self.step()
                 n += 1

@@ -112,7 +112,7 @@ module pdp9x (
                 4'd5:    aluop = `ALU_PASSB;
                 4'd7:    aluop = `ALU_OR;
                 4'd10:   aluop = `ALU_ADD1;
-                4'd11:   aluop = `ALU_DEC;
+                4'd11:   aluop = `ALU_DECB;
                 default: aluop = `ALU_PASSB;
             endcase
         end else aluop = `F_ALU;
@@ -128,6 +128,7 @@ module pdp9x (
     // group 1 is dedicated logic, applied to AC, L and IX at once
     reg [17:0] g1ac;
     reg        g1l;
+    reg        g1t;
     always @* begin
         g1ac = busa;
         g1l  = l;
@@ -136,8 +137,11 @@ module pdp9x (
         if (ir[9])  g1ac = ~g1ac;                       // CMA
         if (ir[8])  g1l  = ~g1l;                        // CML
         if (ir[3])  g1ac = g1ac + 18'd1;                // IAC
-        if (ir[7])  begin g1ac = {g1ac[16:0], g1l}; g1l = busa[17]; end   // RLA
-        if (ir[6])  begin g1l = g1ac[0]; g1ac = {g1l, g1ac[17:1]}; end    // RRA
+        // Both rotates need the bit that leaves kept aside: assigning the link
+        // first makes the shift bring in the bit it just took, and taking it
+        // from bus A ignores whatever CLA, CMA or IAC did above.
+        if (ir[7])  begin g1t = g1ac[17]; g1ac = {g1ac[16:0], g1l}; g1l = g1t; end
+        if (ir[6])  begin g1t = g1ac[0];  g1ac = {g1l, g1ac[17:1]}; g1l = g1t; end
         if (ir[5])  g1ac = {g1ac[16:0], 1'b0};          // SHA
         if (ir[4])  g1ac = {g1ac[17], g1ac[17:1]};      // SRA
     end
@@ -153,7 +157,7 @@ module pdp9x (
             `ALU_XOR:    r = busa ^ busb;
             `ALU_PASSA:  r = busa;
             `ALU_PASSB:  r = busb;
-            `ALU_PASSB1: r = busb + 18'd1;
+            `ALU_DECB:   r = busb - 18'd1;   // DSZ: the datum arrives on bus B
             `ALU_CMA:    r = ~busa;
             `ALU_SHL:    r = {busa[16:0], 1'b0};
             `ALU_SHR:    r = {busa[17], busa[17:1]};
@@ -177,7 +181,11 @@ module pdp9x (
     endcase
 
     // ---------------- conditions ----------------
-    wire g2 = ir[11] ^ ((ir[0] & (ac == 18'b0)) | (ir[1] & l) | (ir[2] & ien));
+    // The skip group's conditions, as the 18-bit family had them: zero, link
+    // and the sign, OR'd, with bit 11 inverting.  Skip-on-interrupts-enabled
+    // used to sit on bit 2; it was ours, DEC had no such thing, and it now
+    // lives in the IO group with the processor's other state.
+    wire g2 = ir[11] ^ ((ir[0] & (ac == 18'b0)) | (ir[1] & l) | (ir[2] & ac[17]));
     reg  cond;
     always @* case (`F_CC)
         `CC_Z:   cond = (dobuf == 18'b0);
@@ -190,6 +198,11 @@ module pdp9x (
     // SKIPC steps PC when the condition holds and goes straight to the fetch,
     // so a comparison needs no state of its own after it
     wire skipc = (`F_SEQ == `SEQ_SKIPC) && cond;
+    // An IOT that tests a flag steps PC as it goes.  The port for the device's
+    // answer was declared and never read, so no device skip worked here at all
+    // -- the sieve uses two IOTs and neither of them skips, which is why it
+    // never showed.
+    wire iot_skip = (`F_MEM == `MEM_IO) && (io_skip || io_skip_i);
     wire load_ir  = fetching && !irq_now && !skipping;
 
     // ---------------- PC and AR ----------------
@@ -208,7 +221,20 @@ module pdp9x (
         default:       arnext = ar;
     endcase
 
-    // ---------------- IOT ----------------
+    // ---------------- IOT, and the wait it can start ----------------
+    // Device 0 is the processor itself, and sub-function 3 with iop4 stops the
+    // fetch until a device asks for attention.  Waiting is not halting: the
+    // clock runs, the microsequencer simply does not advance, so the cost is
+    // cycles and no instructions.
+    wire is_wait = (`F_MEM == `MEM_IO) && (ir[13:11] == 3'd0)
+                   && (ir[10:8] == 3'd3) && ir[2];
+    // device 0, sub 4 and 5 with IOP1: skip on interrupts on, and off
+    wire cpu_io  = (`F_MEM == `MEM_IO) && (ir[13:11] == 3'd0) && ir[0];
+    wire io_skip_i = cpu_io && (((ir[10:8] == 3'd4) && ien)
+                             || ((ir[10:8] == 3'd5) && !ien));
+    reg  waiting;
+    wire wake = |req[7:1];
+
     assign io_stb   = (`F_MEM == `MEM_IO);
     assign io_field = ir[13:0];
     assign io_ac    = ac;
@@ -217,12 +243,15 @@ module pdp9x (
     // It answers the dispatch in the fetch's own cycle, so a stack instruction
     // costs its population count.  The mask it works on is the one just read
     // when the dispatch comes from a fetch.
-    wire [3:0] mcur = load_ir ? bd[3:0] : msk;
+    // Both the mask and the direction come from the word just read, not from
+    // the instruction still in IR: at a fetch, IR is a whole instruction behind.
+    wire [3:0]  mcur  = load_ir ? bd[3:0] : msk;
+    wire        pushc = load_ir ? ~bd[11] : ~ir[11];
     reg  [6:0] mask_entry;
     reg  [3:0] mask_left;
     always @* begin
         if (mcur == 4'b0) begin mask_entry = `L_FETCH_I; mask_left = 4'b0; end
-        else if (!ir[11]) begin                       // push takes the lowest
+        else if (pushc) begin                         // push takes the lowest
             if (mcur[0])      begin mask_entry = `L_PSH_SP;  mask_left = mcur & 4'b1110; end
             else if (mcur[1]) begin mask_entry = `L_PSH_LPC; mask_left = mcur & 4'b1101; end
             else if (mcur[2]) begin mask_entry = `L_PSH_IX;  mask_left = mcur & 4'b1011; end
@@ -239,7 +268,10 @@ module pdp9x (
     reg [6:0] upcnext;
     reg [3:0] msknext;
     always @* begin
-        msknext = msk;
+        // The mask a fetch has just read is the one the dispatch works on, and
+        // the bit it takes must stay taken: loading the field afterwards would
+        // put the bit back and the push would repeat for ever.
+        msknext = load_ir ? bd[3:0] : msk;
         case (`F_SEQ)
             `SEQ_NEXT:  upcnext = upc + 7'd1;
             `SEQ_JUMP:  upcnext = `F_NA;
@@ -266,11 +298,13 @@ module pdp9x (
     reg [16:0] pcw;
     always @(posedge clk) begin
         if (rst) begin
-            upc <= `L_FETCH; ien <= 0; sp <= 12'b0; hlt <= 0;
+            upc <= `L_FETCH; ien <= 0; sp <= 12'b0; hlt <= 0; waiting <= 0;
             imask <= 8'hFF; msk <= 4'b0; pgl <= 5'b0;
             ac <= 18'b0; ix <= 18'b0; t <= 18'b0; di <= 18'b0;
             dobuf <= 18'b0; l <= 1'b0; ir <= 18'b0;
             pc <= mem[0][16:0]; ar <= mem[0][16:0];
+        end else if (waiting) begin
+            if (wake) waiting <= 1'b0;
         end else if (!hlt) begin
             // memory
             if (`F_MEM == `MEM_RD) di <= bd;
@@ -280,7 +314,7 @@ module pdp9x (
 
             // writes from bus R; PC takes the AR mux value, not bus R, because
             // a jump wants the address it has just formed and AR is on no bus
-            pcw = skipc ? (pc + 17'd1) : pcnext;
+            pcw = (skipc || iot_skip) ? (pc + 17'd1) : pcnext;
             case (`F_RDST)
                 `RDST_AC:  ac <= r;
                 `RDST_IX:  ix <= r;
@@ -312,15 +346,15 @@ module pdp9x (
             endcase
 
             pc <= pcw;
-            ar <= skipc ? (pc + 17'd1) : arnext;
+            ar <= (skipc || iot_skip) ? (pc + 17'd1) : arnext;
             msk <= msknext;
 
             if (load_ir) begin
                 ir  <= bd;
-                msk <= bd[3:0];
                 pgl <= pc[16:12];                // before the increment
             end
 
+            if (is_wait) waiting <= 1'b1;
             if (irq_now) begin
                 upc <= `L_IRQ;
                 irq_devl <= irq_dev;

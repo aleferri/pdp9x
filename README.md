@@ -180,18 +180,25 @@ FOCAL's does: `FRAN(n)` gives a value in `0..n-1` instead. A linear
 congruential generator, with the low bits shifted away because those are the
 weak ones.
 
-Hamurabi ran unchanged in spirit — bushels, acres and population are integers,
-which is why it was the easier of the two. Lunar was not, and the reason is
-worth stating precisely. In millimetres per second the velocity of a 370 second
-lunar fall is 599000, and **an 18-bit word stops at 131071**: the velocity
-wrapped and the lander drifted. Centimetres per second put the ceiling at
-1310 m/s and it flies correctly — free fall reaches 8200 cm/s at 50 seconds,
-which is 1.62 m/s² times 50, and a computed profile lands at exactly the 100
-cm/s threshold.
+Hamurabi ran unchanged in spirit — bushels, acres and population are integers.
+Lunar did not, and for a reason worth stating precisely: in millimetres per
+second the velocity of a 370 second lunar fall is 599000, and an 18-bit word
+stops at 131071. The velocity wrapped and the lander drifted.
 
-That is the clearest argument yet for the 36-bit floating point that is still
-missing. Not that integers are imprecise — that a real trajectory does not fit
-in the word.
+It now runs **Storer's own physics** rather than a kinematic stand-in, because
+the evaluator carries 36 bits. The mass falls as the fuel burns, so the same
+flow rate decelerates harder as the tank empties, and the series for
+`-ln(1-Q)` keeps its second term instead of vanishing under the resolution of
+the fixed point. Free fall gains 52.8 ft/s every ten seconds; a searched
+profile — six steps of fall, eight at 170 lb/s, then 36 — touches down at 200
+seconds doing 74.1 ft/s. Those numbers match an independent model of the same
+integer arithmetic digit for digit.
+
+One rule the program has to respect, and it is a limit of the evaluator rather
+than of the physics: `9504*10*E` works and `9504*E*10` does not. A product of
+two words is exact in the pair, but multiplying a value that is *already* wider
+than a word truncates it, because an exact 36 by 36 product would need 72 bits.
+Division has no such limit — it takes the whole pair.
 
 ### Command level
 

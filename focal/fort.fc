@@ -1,0 +1,17 @@
+10 SET S=0; FOR I=1,5; SET S=S+I
+20 TYPE "a ", S, " ATTESO 15", !
+30 SET S=0; FOR I=10,-3,1; SET S=S+I
+40 TYPE "b ", S, " ATTESO 22", !
+50 SET S=0; FOR I=5,5; SET S=S+I
+60 TYPE "c ", S, " ATTESO 5", !
+70 SET S=0; FOR I=5,-1,5; SET S=S+I
+80 TYPE "d ", S, " ATTESO 5", !
+90 SET S=0; FOR I=6,2; SET S=S+I
+100 TYPE "e ", S, " ATTESO 0", !
+110 SET S=0; FOR I=2,-1,6; SET S=S+I
+120 TYPE "f ", S, " ATTESO 0", !
+130 SET N=0; FOR I=-3,2,3; SET N=N+1
+140 TYPE "g ", N, " ATTESO 4", !
+145 SET N=0; FOR I=3,-2,-3; SET N=N+1
+147 TYPE "h ", N, " ATTESO 4", !
+150 QUIT

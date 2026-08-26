@@ -102,6 +102,78 @@ def console():
     fails = c.m[sym['FAILS']] if 'FAILS' in sym else -1
     print("mul/div vectors failing: %d of 9  (signed, both signs, overflow, /0)" % fails)
     print("multiply exits as soon as the multiplier runs dry, so cost tracks")
+
+    # The FOR loop decides whether to continue by comparing two signs, which
+    # used to mean extracting both.  Two signs agree exactly when their XOR is
+    # not negative, so one skip settles it -- and this is where a sign error
+    # hides, so the edges are here: a step that crosses zero, a loop that lands
+    # exactly on its limit, and two that must not run at all.
+    m = Machine(load('bin/focal_fort.bin'))
+    m.reset()
+    st = m.run(limit=40_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("FOR edges: %s" % " ".join(r.split(' ')[1] for r in rows[:8]))
+    assert st == "halt", "fort did not finish"
+    for r in rows:
+        if 'ATTESO' not in r:
+            continue
+        got, want = r.split(' ')[1], r.split('ATTESO ')[1]
+        assert got == want, "FOR edges: %s" % r
+
+    # The skip group with the conditions the 18-bit family had: the sign on the
+    # bit that skip-on-interrupts-enabled used to hold, and that one moved into
+    # the IO group under device 0.  Nine cases: both polarities of the sign,
+    # the two combinations, and the relocated interrupt-state skips.
+    c = CPU(load('bin/skiptest.bin'))
+    c.reset()
+    c.timer_period = 10 ** 9
+    st = c.run(limit=100_000)
+    print("skip group: %s" % ("all nine cases pass" if c.out == [1] else "FAILED %s" % c.out))
+    assert st == "halt" and c.out == [1], "skip group failed: %s" % c.out
+
+    # WAIT: device 0, sub-function 3.  Waiting is not halting -- the clock runs
+    # and the fetch does not, so the cost is cycles without instructions.  The
+    # blitter has no interrupt line, so this cannot replace the scroll poll; it
+    # is for the waits that a device can end, which means the timer and the
+    # keyboard.
+    c = CPU(load('bin/waittest.bin'))
+    c.reset()
+    c.timer_period = 500
+    st = c.run(limit=100_000)
+    print("WAIT: %d instructions, %d cycles" % (c.instrs, c.cycles))
+    assert st == "halt", "wait did not finish"
+    assert c.instrs == 4, "wait executed %d instructions, expected 4" % c.instrs
+    assert c.cycles > 400, "wait did not actually stall: %d cycles" % c.cycles
+
+    # and with nothing able to wake it, the wait holds: the program's HTON arms
+    # the harness timer, so the period has to be pushed past the run to see it
+    c = CPU(load('bin/waittest.bin'))
+    c.reset()
+    c.timer_period = 10 ** 9
+    st = c.run(limit=5_000)
+    assert st == "limit" and c.instrs == 2, \
+        "wait should hold with nothing to wake it, got %d instructions" % c.instrs
+
+    # MUL36 and DIV36: the thirty-six bit pair that fixed point needs.  The
+    # last vector's true quotient does not fit a word, so it checks the
+    # documented truncation rather than an exact answer.
+    c = CPU(load('bin/m36test.bin'))
+    c.reset()
+    c.timer_period = 10 ** 9
+    c.run(limit=20_000_000)
+    o = c.out
+    vec = ((1000, 1000, 1000), (2897, 15885, 131072), (2897, 252, 1024),
+           (100000, 3, 7), (131071, 131071, 131071), (262143, 262143, 65536),
+           (5, 7, 3), (15885, 15885, 131072))
+    bad = 0
+    for i, (a, b, d) in enumerate(vec):
+        hi, lo, q, r = o[4 * i:4 * i + 4]
+        if (hi << 18) | lo != a * b:
+            bad += 1
+        if q != (a * b // d) & 0o777777 or r != a * b % d:
+            bad += 1
+    print("36-bit mul/div: %d checks failing of %d" % (bad, 2 * len(vec)))
+    assert bad == 0, "36-bit primitives failed"
     print("the significant bits of the smaller operand, not a fixed 18.")
     assert fails == 0, "arithmetic self test failed"
 
@@ -219,6 +291,73 @@ def console():
     # as The Sumer Game, in FOCAL on a PDP-8 in 1968; Jim Storer's Lunar
     # Landing Game was FOCAL on a PDP-8 in 1969.  Both were converted to BASIC
     # by David Ahl afterwards, which is how most people met them.
+    # Two size classes for string bodies, eight words and 256, with free lists.
+    # The loop matters more than the single assignments: without recycling, a
+    # bump allocator would grow the heap on every reassignment.
+    # The functions return a word and used to leave ACH alone, so FABS of a
+    # negative came back negative -- the high half still held the operand's
+    # sign.  They are called rather than jumped to now, so one widening covers
+    # all of them.
+    m = Machine(load('bin/focal_fnt.bin'))
+    m.reset()
+    st = m.run(limit=40_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("functions in wide expressions: %s" % " | ".join(rows[2:6]))
+    assert st == "halt", "fnt did not finish"
+    for r in rows:
+        if 'ATTESO' not in r:
+            continue
+        got, want = r.split(' ')[1], r.split('ATTESO ')[1]
+        assert got == want, "functions in wide expressions: %s" % r
+
+    # The evaluator now carries thirty-six bits, so every ordinary expression
+    # goes through the widened path.  These are the shapes that broke while it
+    # was being converted: a bare variable, and a variable inside a product.
+    m = Machine(load('bin/focal_exprt.bin'))
+    m.reset()
+    st = m.run(limit=30_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    want = ["a 7", "b 10", "c 4", "d 21", "e 7", "f 7", "g 21", "h 16"]
+    print("expressions: %s" % " ".join(rows[:8]))
+    assert st == "halt" and rows[:8] == want, "expressions: %s" % rows[:8]
+
+    # Type 1, the thirty-six bit integer.  Storage and printing are done; the
+    # expression that feeds it is still eighteen bits wide, so a literal beyond
+    # a word truncates before WIDEN ever sees it.  That is the ACH channel's
+    # job, not this one's.
+    m = Machine(load('bin/focal_long.bin'))
+    m.reset()
+    st = m.run(limit=30_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("36-bit type: %s" % " | ".join(rows[:5]))
+    assert st == "halt", "long did not finish"
+    for r in rows:
+        if 'ATTESO' not in r:
+            continue
+        got, want = r.split(' ')[1], r.split('ATTESO ')[1]
+        assert got == want, "long: %s" % r
+
+    m = Machine(load('bin/focal_grow.bin'))
+    m.reset()
+    st = m.run(limit=40_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("string classes: %s" % " | ".join(rows[:4]))
+    assert st == "halt", "grow did not finish"
+    for r in rows[:4]:
+        if 'ATTESO' in r:
+            got, want = r.split('LEN ')[1].split(' ATTESO ')
+            assert got.strip() == want.strip(), "grow: %s" % r
+
+    # The descriptor carries a capacity, so a subscript past the end is an
+    # error where it used to run into whatever followed the array.
+    m = Machine(load('bin/focal_bounds.bin'))
+    m.reset()
+    st = m.run(limit=20_000_000)
+    rows = [r.rstrip() for r in m.console() if r.strip()]
+    print("array bounds: %s" % " | ".join(rows[:2]))
+    assert st == "halt" and rows[1] == "?B", "bounds check did not fire"
+    assert not any('NON DOVREBBE' in r for r in rows), "execution continued past ?B"
+
     m = Machine(load('bin/focal_twoch.bin'))
     m.reset()
     st = m.run(limit=30_000_000)
@@ -232,17 +371,29 @@ def console():
     m.kbd_input = [(c, 0) for c in '0\n1900\n900\n' * 12]
     st = m.run(limit=40_000_000)
     rows = [r.rstrip() for r in m.console() if r.strip()]
-    verdict = [r for r in rows if 'DEPOST' in r or 'GOVERNATO' in r or 'RICORDA' in r]
+    # Five endings: deposed mid-term, or one of the four appraisals the 1973
+    # version added.  No fixed line of play survives every roll -- a single
+    # yield of one bushel an acre is fatal -- so the test asserts that the
+    # game grades you, not that it lets you win.
+    endings = ('DEPOSTO', 'FINK', 'NERONE', 'MEGLIO', 'FANTASTICA')
+    verdict = [r for r in rows if any(e in r for e in endings)]
     print("hamurabi: %d instructions, verdict %r" % (m.instrs, verdict[0] if verdict else None))
     assert st == "halt" and verdict, "hamurabi did not reach a verdict"
 
+    # Storer's physics now, not a kinematic stand-in: the mass falls as the
+    # fuel burns, so the same flow rate decelerates harder as the tank empties,
+    # and the series for -ln(1-Q) keeps its second term because the evaluator
+    # carries thirty-six bits.  These numbers match an independent model of the
+    # same integer arithmetic digit for digit.
     m = Machine(load('bin/focal_lunar.bin'))
     m.reset()
-    m.kbd_input = [(c, 0) for c in '0\n0\n0\n' + '18\n' * 12]
+    m.kbd_input = [(c, 0) for c in '0\n' * 6 + '170\n' * 8 + '36\n' * 10]
     st = m.run(limit=40_000_000)
     rows = [r.rstrip() for r in m.console() if r.strip()]
     print("lunar: %s / %s" % (rows[-2] if len(rows) > 1 else '?', rows[-1]))
-    assert st == "halt" and any('PERFETTO' in r for r in rows), "lunar did not land"
+    assert st == "halt", "lunar did not finish"
+    assert any('CONTATTO AL TEMPO 200' in r for r in rows), "lunar: wrong contact time"
+    assert any('IMPATTO A 741' in r for r in rows), "lunar: wrong impact speed"
 
     m = Machine(load('bin/focal_loop.bin'))
     m.reset()

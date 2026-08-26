@@ -23,7 +23,7 @@ A17 = 0x1FFFF
 FIELDS = [
     ("ASRC",  3, "NONE AC IX SP T PC FROMIR"),
     ("BSRC",  2, "DI IRF11 IRF12 DEV"),
-    ("ALU",   4, "ADD AND OR XOR PASSA PASSB SHL SHR ROL ROR CMA FROMIR DEC ADD1 PASSB1 G1"),
+    ("ALU",   4, "ADD AND OR XOR PASSA PASSB SHL SHR ROL ROR CMA FROMIR DEC ADD1 DECB G1"),
     ("DOSRC", 3, "HOLD FROMIR LPC ALU AC IX SP"),
     ("RDST",  3, "NONE AC IX SP T PC DO FROMIR"),
     ("LCTL",  2, "HOLD FROMALU FROMDI"),
@@ -165,26 +165,26 @@ u("FETCH_S", MEM="RD", ARSRC="PCNEXT", SEQ="SKIPF", CC="G2")
 u("G3",     SEQ="MAPMASK")
 
 u("PSH_SP", ASRC="SP", ALU="DEC", RDST="SP", ARSRC="STACK", DOSRC="SP", SEQ="NEXT")
-u(          MEM="WR", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          MEM="WR", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 u("PSH_LPC",ASRC="SP", ALU="DEC", RDST="SP", ARSRC="STACK", DOSRC="LPC", SEQ="NEXT")
-u(          MEM="WR", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          MEM="WR", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 u("PSH_IX", ASRC="SP", ALU="DEC", RDST="SP", ARSRC="STACK", DOSRC="IX", SEQ="NEXT")
-u(          MEM="WR", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          MEM="WR", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 u("PSH_AC", ASRC="SP", ALU="DEC", RDST="SP", ARSRC="STACK", DOSRC="AC", SEQ="NEXT")
-u(          MEM="WR", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          MEM="WR", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 
 u("POP_AC", ARSRC="STACKR", SEQ="NEXT")
 u(          MEM="RD", SPUP="U1", SEQ="NEXT")
-u(          BSRC="DI", ALU="PASSB", RDST="AC", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          BSRC="DI", ALU="PASSB", RDST="AC", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 u("POP_IX", ARSRC="STACKR", SEQ="NEXT")
 u(          MEM="RD", SPUP="U1", SEQ="NEXT")
-u(          BSRC="DI", ALU="PASSB", RDST="IX", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          BSRC="DI", ALU="PASSB", RDST="IX", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 u("POP_LPC",ARSRC="STACKR", SEQ="NEXT")
 u(          MEM="RD", SPUP="U1", SEQ="NEXT")
 u(          ARSRC="DI", RDST="PC", LCTL="FROMDI", ICTL="IFROMIR", SEQ="MAPMASK")
 u("POP_SP", ARSRC="STACKR", SEQ="NEXT")
 u(          MEM="RD", SEQ="NEXT")
-u(          BSRC="DI", ALU="PASSB", RDST="SP", ICTL="IFROMIR", SEQ="MAPMASK")
+u(          BSRC="DI", ALU="PASSB", RDST="SP", ARSRC="PC", ICTL="IFROMIR", SEQ="MAPMASK")
 
 # CAL pushes first and forms the target afterwards, so it needs nowhere to keep
 # it: the address sequences already load PC, and there are four of them because
@@ -335,6 +335,7 @@ class Micro:
     def __init__(self, mem, io=None):
         self.m = mem
         self.io = io
+        self.waiting = False
         self.cs = assemble()
         self.map1, self.map2 = maps()
         self.ac = self.ix = self.t = self.di = self.do = 0
@@ -369,21 +370,21 @@ class Micro:
             # one drives ALU_L, which is the whole difference between TAD and
             # TAS and is not visible in the four bit function field.
             name = {0: "ADD", 1: "ADDV", 2: "AND", 3: "XOR", 5: "PASSB",
-                    7: "OR", 10: "ADD1", 11: "DEC"}.get((self.ir >> 14) & 0xF, "PASSB")
+                    7: "OR", 10: "ADD1", 11: "DECB"}.get((self.ir >> 14) & 0xF, "PASSB")
             if name == "ADDV":
                 s = (a + b) & W
                 v = 1 if ((a >> 17) & 1) == ((b >> 17) & 1) and ((s >> 17) & 1) != ((a >> 17) & 1) else 0
                 return s, v
             op = SYM[("ALU", name)]
         n = ["ADD", "AND", "OR", "XOR", "PASSA", "PASSB", "SHL", "SHR",
-             "ROL", "ROR", "CMA", "FROMIR", "DEC", "ADD1", "PASSB1", "G1"][op]
+             "ROL", "ROR", "CMA", "FROMIR", "DEC", "ADD1", "DECB", "G1"][op]
         if n == "G1":
             return self.group1(a)
         if n == "ADD1":
             s = a + b + 1
             return s & W, 1 if s > W else 0
-        if n == "PASSB1":
-            return (b + 1) & W, self.l
+        if n == "DECB":
+            return (b - 1) & W, self.l
         if n == "ADD":
             s = a + b + cin
             return s & W, 1 if s > W else 0
@@ -444,6 +445,14 @@ class Micro:
         return "IX" if (self.ir >> 11) & 1 else "AC"
 
     def cycle(self):
+        if self.waiting:
+            # WAIT holds the microsequencer where it is.  Cycles pass, the
+            # microprogram does not advance, and any device request releases it.
+            self.cycles += 1
+            if any(self.req[1:8]):
+                self.waiting = False
+            return
+
         w = self.cs[self.upc]
         f = lambda k: ufield(w, k)
 
@@ -476,8 +485,22 @@ class Micro:
             self.di = self.bd
         elif f("MEM") == SYM[("MEM", "WR")]:
             self.m[self.ar & A17] = self.do & W
-        elif f("MEM") == SYM[("MEM", "IO")] and self.io:
-            self.io(self)
+        elif f("MEM") == SYM[("MEM", "IO")]:
+            # Device 0 is the processor, so WAIT is decoded here rather than
+            # handed to the device model: a machine with no peripherals at all
+            # still has to be able to stop and be woken.
+            dev = (self.ir >> 11) & 7
+            sub = (self.ir >> 8) & 7
+            if dev == 0 and sub == 3 and (self.ir >> 2) & 1:
+                self.waiting = True
+            elif dev == 0 and (self.ir >> 0) & 1 and sub in (4, 5):
+                on = sub == 4
+                if self.i == on:            # skip on interrupts on, or off
+                    self.pc = (self.pc + 1) & A17
+                    self.ar = self.pc
+                    self.cycles += 1
+            elif self.io:
+                self.io(self)
 
         # DO selects straight from the register file rather than off a bus, so
         # a push can capture what it means to write while bus A carries SP
@@ -654,7 +677,8 @@ class Micro:
             if (w >> 1) & 1:
                 c |= 1 if self.l else 0
             if (w >> 2) & 1:
-                c |= 1 if self.i else 0
+                c |= (self.ac >> 17) & 1     # the sign, where the interrupt
+                                             # state used to sit
             if (w >> 11) & 1:
                 c ^= 1
             return bool(c)

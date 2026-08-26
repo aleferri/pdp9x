@@ -8,6 +8,7 @@ module tb;
     reg  [17:0] io_in = 0;
     reg         io_skip = 0;
     reg   [7:0] req = 0;
+    // a device asks for attention part way through, to release a WAIT
 
     pdp9x cpu (.clk(clk), .rst(rst), .halted(halted), .io_stb(io_stb),
                .io_field(io_field), .io_ac(io_ac), .io_in(io_in),
@@ -29,8 +30,12 @@ module tb;
         for (i = 0; i < 131072; i = i + 1) cpu.mem[i] = 18'b0;
         $readmemh(prog, cpu.mem);
         @(negedge clk) rst = 0;
+        if ($test$plusargs("poke")) begin
+            repeat (300) @(posedge clk);
+            req[2] = 1;
+        end
         if ($test$plusargs("trace"))
-            for (i = 0; i < 200000; i = i + 1) begin
+            for (i = 0; i < 60000; i = i + 1) begin
                 @(posedge clk);
                 $display("%0d %0d %06o %06o %06o %0d %0o %06o",
                          i, cpu.upc, cpu.ir, cpu.ac, cpu.ix, cpu.l, cpu.pc, cpu.ar);

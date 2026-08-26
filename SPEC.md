@@ -175,17 +175,27 @@ no side effect.
 
 ```
 13..12  11   10..3    2    1    0
-  01     N    ----    I    L    Z
+  01     N    ----    M    L    Z
 ```
 
-`Z` is `AC = 0`, `L` is the link set, `I` is interrupts enabled. Selected
-conditions are OR'd; `N` inverts the result.
+`Z` is `AC = 0`, `L` is the link set, `M` is `AC` negative. Selected conditions
+are OR'd; `N` inverts the result.
+
+These are the conditions the 18-bit family had, in the same shape: DEC put
+minus, zero and link on three contiguous bits with one bit inverting, and named
+each polarity — `SMA`/`SPA`, `SZA`/`SNA`, `SNL`/`SZL`. Both sets of mnemonics
+are accepted here, ours by polarity (`SKZ`/`SKNZ`, `SKL`/`SKNL`, `SKM`/`SKNM`)
+and DEC's by name, because the *combinations* are what make an OR'd group worth
+having and they are documented under DEC's names: minus or zero is `AC <= 0`,
+and its inverse is `AC > 0`. Those two have names of their own, `SKLE` and
+`SKGT`, because the assembler emits one word per mnemonic.
 
 With `N` set over more than one condition the result is a NOR, not "neither
-condition individually". Follow the DEC convention and give each condition two
-mnemonics by polarity — `SKZ`/`SKNZ`, `SKL`/`SKNL`, `SKI`/`SKNI` — so the
-assembly programmer never meets the inversion. `N` with an empty mask is an
-unconditional skip.
+condition individually". `N` with an empty mask is an unconditional skip.
+
+Skip-on-interrupts-enabled used to sit on bit 2. It was ours — DEC had no such
+thing — and it is now `SKI`/`SKNI` in the IO group under device 0, with the
+processor's other state.
 
 ### Group 2 — stack
 
@@ -484,7 +494,9 @@ load.
 
 ## 9. Idioms worth knowing
 
-**Ordering comparisons.** There is no skip on sign. Two idioms cover it:
+**Ordering comparisons.** `SKM` tests the sign directly, and `SKLE`/`SKGT` give
+`<= 0` and `> 0`. Two further idioms are worth knowing, because they compare
+against an arbitrary limit rather than against zero:
 
 `TAD` against a precomputed negative constant gives an unsigned comparison
 against an arbitrary limit, at the cost of one zero-page read:
@@ -562,8 +574,13 @@ a handler must have its scratch saved explicitly by the handler.
 
 - **No skip on equality.** `SAD`/`SXD` are inequality only; every "loop while
   equal" pays an extra jump. There are free bits in group 1.
-- **No skip on sign.** Worked around by §9; the alternative, `RLA` + `SKL` +
-  `RRA`, costs three instructions and disturbs `AC`.
+- ~~**No skip on sign.**~~ Closed. It was worked around by a `SGNB` subroutine
+  that cost six instructions per test and was called 16926 times in two FOCAL
+  programs; the sign now has bit 2 of the skip group, vacated by moving
+  `SKI`/`SKNI` into the IO group. Converting 32 of the 34 call sites removed
+  4.9% of all instructions executed outside the blitter wait. The two that
+  remain compare *two* signs against each other and want restructuring rather
+  than a skip.
 - **Opcodes `1100` and `1101` are unassigned.**
 - **Returning `L` from a subroutine is awkward, not impossible** (§9). A
   keep-link bit on pop would make it free, at the cost of one bit and of the

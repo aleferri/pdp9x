@@ -15,7 +15,7 @@ for f in asm/*.s; do
 done
 rm -f asm/*.export.txt
 # extra FOCAL images, one per sample program
-for p in loop do ask for func keys types tyerr more arr brk hamurabi lunar rnd twoch; do
+for p in loop do ask for func keys types tyerr more arr brk hamurabi lunar rnd twoch grow bounds long exprt fnt fort; do
     python3 mkprog.py "focal/$p.fc" asm/program.s >/dev/null
     "$CASM" -lang=pdp9x.casm -byteSize=32 -endian=big -export=bin asm/focal.s >/dev/null
     mv asm/focal.bin "bin/focal_$p.bin"

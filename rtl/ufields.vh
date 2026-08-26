@@ -17,12 +17,12 @@
 `define ALU_AND      1
 `define ALU_CMA      10
 `define ALU_DEC      12
+`define ALU_DECB     14
 `define ALU_FROMIR   11
 `define ALU_G1       15
 `define ALU_OR       2
 `define ALU_PASSA    4
 `define ALU_PASSB    5
-`define ALU_PASSB1   14
 `define ALU_ROL      8
 `define ALU_ROR      9
 `define ALU_SHL      6

@@ -531,6 +531,21 @@
     .out [ 0x38204 ];
 }
 
+.opcode SKI {{ }}
+.with ( ) -> {
+    .out [ 0x38401 ];
+}
+
+.opcode SKNI {{ }}
+.with ( ) -> {
+    .out [ 0x38501 ];
+}
+
+.opcode WAIT {{ }}
+.with ( ) -> {
+    .out [ 0x38304 ];
+}
+
 .opcode HTON {{ }}
 .with ( ) -> {
     .out [ 0x3A804 ];
@@ -678,12 +693,12 @@
     .out [ 0x3D802 ];
 }
 
-.opcode SKI {{ }}
+.opcode SKM {{ }}
 .with ( ) -> {
     .out [ 0x3D004 ];
 }
 
-.opcode SKNI {{ }}
+.opcode SKNM {{ }}
 .with ( ) -> {
     .out [ 0x3D804 ];
 }
@@ -691,6 +706,56 @@
 .opcode SKP {{ }}
 .with ( ) -> {
     .out [ 0x3D800 ];
+}
+
+.opcode SZA {{ }}
+.with ( ) -> {
+    .out [ 0x3D001 ];
+}
+
+.opcode SNA {{ }}
+.with ( ) -> {
+    .out [ 0x3D801 ];
+}
+
+.opcode SNL {{ }}
+.with ( ) -> {
+    .out [ 0x3D002 ];
+}
+
+.opcode SZL {{ }}
+.with ( ) -> {
+    .out [ 0x3D802 ];
+}
+
+.opcode SMA {{ }}
+.with ( ) -> {
+    .out [ 0x3D004 ];
+}
+
+.opcode SPA {{ }}
+.with ( ) -> {
+    .out [ 0x3D804 ];
+}
+
+.opcode SKLE {{ }}
+.with ( ) -> {
+    .out [ 0x3D005 ];
+}
+
+.opcode SKGT {{ }}
+.with ( ) -> {
+    .out [ 0x3D805 ];
+}
+
+.opcode SKLZ {{ }}
+.with ( ) -> {
+    .out [ 0x3D006 ];
+}
+
+.opcode SKGZ {{ }}
+.with ( ) -> {
+    .out [ 0x3D806 ];
 }
 
 // ---- OPR group 3: stack.  bit11 = pop, bits 10:9 = I field ----

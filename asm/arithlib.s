@@ -14,6 +14,14 @@ SG2:    .dd    0
 MASK:   .dd    0
 TMP:    .dd    0
 NDVR:   .dd    0               ; two's complement of the divisor
+MDH:    .dd    0               ; high word of a thirty-six bit value
+MDL:    .dd    0               ; low word
+MDT:    .dd    0
+N36:    .dd    -36
+DQ36:   .dd    0
+D18L:   .dd    0               ; the word being divided, and the quotient
+D18R:   .dd    0               ; the running remainder
+D18C:   .dd    0
 N18:    .dd   -18
 ONE:    .dd    1
 TEN:    .dd    10
@@ -22,7 +30,11 @@ BIT17:  .dd    0x20000
 ; ---- decimal conversion ----
 DVAL:   .dd    0
 DPOS:   .dd    0
-DBUF:   .dd    0               ; DBUF..DBUF+7 hold the digits
+DBUF:   .dd    0               ; DBUF..DBUF+11: eleven digits and a sign, which
+        .dd    0                ; is what a thirty-six bit value spells out to
+        .dd    0
+        .dd    0
+        .dd    0
         .dd    0
         .dd    0
         .dd    0
@@ -31,13 +43,16 @@ DBUF:   .dd    0               ; DBUF..DBUF+7 hold the digits
         .dd    0
         .dd    0
 DBUFP:  .dd    DBUF
+        .dd    0
+        .dd    0
+        .dd    0
 
 DBUFP2: .dd    0
 MINUS:  .dd    45
 MONE:   .dd   -1
 MOSTNEG: .dd   0x20000
 NIL:    .dd    0
-DBEND:  .dd    8               ; one past the last slot of DBUF
+DBEND:  .dd    12              ; one past the last slot of DBUF
 NEGF:   .dd    0
 MSRC:   .dd    0
 SQN:    .dd    0
@@ -124,18 +139,18 @@ MUL:    PSH     IX              ; the caller may be keeping an index here
         CAL     SWAP            ; cheaper than special casing it.
         LIX     NIL
         LAC     M2
-MULL:   LSR                     ; L <- bit 0, multiplier >>= 1
+.loop:  LSR                     ; L <- bit 0, multiplier >>= 1
         SKNL
         TADX    M1              ; accumulate straight into IX
         SKNZ
-        JMP     MULD            ; multiplier exhausted
+        JMP     .done            ; multiplier exhausted
         PSH     AC
         LAC     M1
         SHA
         DAC     M1
         POP     AC
-        JMP     MULL
-MULD:   DIX     MRES
+        JMP     .loop
+.done:  DIX     MRES
         POP     IX
         LAC     MRES
         CAL     NEGR
@@ -150,6 +165,126 @@ SWAP:   LAC     M1
         DAC     M2
         RET
 
+
+; =====================================================================
+; Thirty-six bit primitives, for fixed point.
+;
+; DIV already holds the trick that makes these work: it compares by adding the
+; two's complement of the divisor and reading the link, so the comparison is
+; unsigned and the remainder never has to be nineteen bits.  A sign test would
+; need that extra bit; a carry test does not.  Both routines below are DIV's
+; loop with the dividend widened to a pair.
+; =====================================================================
+; MUL36: MDH and MDL <- M1 * M2, unsigned, thirty-six bits.
+;        Callers wanting a signed product apply the sign themselves.
+MUL36:  PSH     IX
+        CLA
+        DAC     MDH
+        DAC     MDL
+        LAC     N18
+        DAC     MCNT
+.loop:  LAC     MDL             ; the pair doubles, low word's top bit moving up
+        RLA
+        GLK
+        DAC     MDT
+        LAC     MDH
+        LSL
+        TAD     MDT
+        DAC     MDH
+        LAC     MDL
+        LSL
+        DAC     MDL
+        LAC     M1              ; take the multiplicand's top bit
+        RLA
+        GLK
+        SKNZ
+        JMP     .noadd
+        CLL                     ; the link must mean this addition alone
+        LAC     MDL
+        TAD     M2
+        DAC     MDL
+        SKL
+        JMP     .noadd
+        LAC     MDH
+        IAC
+        DAC     MDH
+.noadd: LAC     M1
+        LSL
+        DAC     M1
+        ISZ     MCNT
+        JMP     .loop
+        POP     IX
+        RET
+
+; DIV36: MRES and AC <- (MDH,MDL) / M2, MREM <- remainder.  Unsigned.
+;        Two constraints, both inherited from the comparison rather than
+;        chosen: the divisor must be under 2^17, because the remainder doubles
+;        every pass and has to stay inside a word for the carry to mean what it
+;        says; and the quotient is the low eighteen bits of the true one, so
+;        dividing a thirty-six bit value by something small returns the bottom
+;        of the answer rather than an error.
+; Dividing thirty-six bits by eighteen is two chained eighteen bit divides, not
+; one thirty-six step loop.  The trick is the one the PDP-7's own DIV uses: the
+; running remainder and the dividend's high half are the same place, because
+; the step requires the remainder to stay below the divisor.  So two words
+; suffice where this first used three, and a third of the transport goes.
+;
+; The high half divides first; its remainder becomes the next high half.
+DIV36:  PSH     IX
+        LAC     M2
+        SKNZ
+        JMP     .zero
+        LAC     M2
+        CIA
+        DAC     NDVR
+        LAC     MDH             ; the high half, with nothing above it
+        DAC     D18L
+        CLA
+        CAL     D18
+        DAC     D18R            ; its remainder carries down
+        LAC     D18L
+        DAC     MDH             ; the quotient's high half
+        LAC     MDL
+        DAC     D18L
+        LAC     D18R
+        CAL     D18
+        DAC     MREM
+        LAC     D18L
+        DAC     MDL
+        DAC     MRES            ; the low word, for callers that want one
+        POP     IX
+        RET
+.zero:  CLA
+        DAC     MRES
+        DAC     MREM
+        POP     IX
+        RET
+
+; D18: AC is the running remainder coming in and going out, D18L the word being
+;      divided, NDVR the divisor's two's complement.  Eighteen steps, and the
+;      quotient replaces D18L as the dividend shifts out of it.
+D18:    DAC     D18R
+        LAC     N18
+        DAC     D18C
+.loop:  LAC     D18L            ; the pair shifts as one chain
+        LSL
+        DAC     D18L
+        LAC     D18R
+        RLA
+        DAC     D18R
+        TAD     NDVR            ; L = 1 when the remainder reaches the divisor
+        SKL
+        JMP     .nofit
+        DAC     D18R
+        LAC     D18L            ; the quotient bit goes where the shift vacated
+        IAC
+        DAC     D18L
+.nofit: ISZ     D18C
+        JMP     .loop
+        LAC     D18R
+        RET
+
+
 ; =====================================================================
 ; DIV:  MRES and AC <- M1 / M2, MREM <- M1 mod M2, signed quotient,
 ;       remainder takes the sign of the dividend.
@@ -157,7 +292,7 @@ SWAP:   LAC     M1
 ; =====================================================================
 DIV:    LAC     M2
         SKNZ
-        JMP     DIVZ
+        JMP     .zero
         CAL     ABS1
         CAL     ABS2
         LAC     SG1
@@ -170,7 +305,7 @@ DIV:    LAC     M2
         DAC     MREM
         LAC     N18
         DAC     MCNT
-DIVL:   LAC     M1              ; shift the dividend left, top bit into L
+.loop:  LAC     M1              ; shift the dividend left, top bit into L
         LSL
         DAC     M1
         LAC     MREM            ; and into the remainder from below
@@ -178,13 +313,13 @@ DIVL:   LAC     M1              ; shift the dividend left, top bit into L
         DAC     MREM
         TAD     NDVR            ; L = 1 when MREM >= divisor
         SKL
-        JMP     DIVNO
+        JMP     .nofit
         DAC     MREM
         LAC     M1
         IAC                     ; set the quotient bit
         DAC     M1
-DIVNO:  ISZ     MCNT
-        JMP     DIVL
+.nofit: ISZ     MCNT
+        JMP     .loop
         LAC     M1
         CAL     NEGR
         DAC     MRES
@@ -197,7 +332,7 @@ DIVNO:  ISZ     MCNT
         DAC     MREM
         LAC     MRES            ; the quotient is the return value
         RET
-DIVZ:   CLA
+.zero:  CLA
         DAC     MRES
         DAC     MREM
         RET
@@ -237,6 +372,167 @@ SQD:    LAC     SQG
         RET
 SQZ:    CLA
         DAC     MRES
+        RET
+
+; =====================================================================
+; Signed wrappers over the thirty-six bit primitives.
+;
+; MUL36 and DIV36 are unsigned, because restoring division needs unsigned
+; operands and the multiply shares its shape.  The evaluator is signed, so the
+; magnitudes go in and the sign comes back out, the same arrangement MUL and
+; DIV already use for eighteen bits.
+; =====================================================================
+; MULS36: MDH, MDL <- M1 * M2, signed, exact in thirty-six bits.
+MULS36: CAL     ABS1
+        CAL     ABS2
+        LAC     SG1
+        XOR     SG2
+        DAC     NEG
+        CAL     MUL36
+        LAC     NEG
+        SKNZ
+        RET
+        LAC     MDL             ; negate the pair
+        CMA
+        DAC     MDL
+        LAC     MDH
+        CMA
+        DAC     MDH
+        CLL
+        LAC     MDL
+        TAD     ONE
+        DAC     MDL
+        SKL
+        RET
+        LAC     MDH
+        IAC
+        DAC     MDH
+        RET
+
+; DIVS36: MDH, MDL / M2, signed.  Quotient replaces the pair, as DIV36 leaves
+;         it, and MRES holds its low word.
+DIVS36: CAL     ABS2
+        LAC     MDH             ; the dividend's sign lives in the high word
+        AND     BIT17
+        SKNZ
+        JMP     .dpos
+        CLA
+        IAC
+        DAC     SG1
+        LAC     MDL
+        CMA
+        DAC     MDL
+        LAC     MDH
+        CMA
+        DAC     MDH
+        CLL
+        LAC     MDL
+        TAD     ONE
+        DAC     MDL
+        SKL
+        JMP     .dsign
+        LAC     MDH
+        IAC
+        DAC     MDH
+        JMP     .dsign
+.dpos:  CLA
+        DAC     SG1
+.dsign: LAC     SG1
+        XOR     SG2
+        DAC     NEG
+        CAL     DIV36
+        LAC     NEG
+        SKNZ
+        JMP     .ddone
+        LAC     MDL
+        CMA
+        DAC     MDL
+        LAC     MDH
+        CMA
+        DAC     MDH
+        CLL
+        LAC     MDL
+        TAD     ONE
+        DAC     MDL
+        SKL
+        JMP     .ddone
+        LAC     MDH
+        IAC
+        DAC     MDH
+.ddone: LAC     MDL
+        DAC     MRES
+        RET
+
+; =====================================================================
+; DEC36: the decimal spelling of the thirty-six bit value in MDH and MDL.
+;        Same contract as DEC: the digits end up in DBUF, and DPOS through
+;        DBEND brackets them.
+;
+; Repeated division by ten is the whole of decimal conversion, which is why
+; this could not exist before DIV36: an eighteen bit divide cannot take a
+; thirty-six bit dividend.
+;
+; Every label here is local, so the routine cannot collide with DIV36 below
+; it -- which is exactly what went wrong the first time this was written.
+; =====================================================================
+DEC36:  PSH     IX
+        CLA
+        DAC     NEGF
+        LAC     MDH             ; the sign lives in the high word
+        AND     BIT17
+        SKNZ                    ; skip when the value is negative
+        JMP     .pos
+        CLA
+        IAC
+        DAC     NEGF
+        LAC     MDL             ; negate the pair: complement both, add one to
+        CMA                     ; the low word, carry into the high
+        DAC     MDL
+        LAC     MDH
+        CMA
+        DAC     MDH
+        CLL
+        LAC     MDL
+        TAD     ONE             ; not IAC: IAC leaves the link alone, and the
+        DAC     MDL             ; carry into the high word is the whole point
+        SKL                     ; skip when the low word carried out
+        JMP     .pos
+        LAC     MDH
+        IAC
+        DAC     MDH
+.pos:   LIX     DBEND           ; fill backwards from the end, as DEC does
+.loop:  LAC     MDL             ; the zero test goes at the top, like DEC's:
+        SKNZ                    ; testing after the write spells a spurious
+        JMP     .high           ; extra digit
+        JMP     .div
+.high:  LAC     MDH
+        SKNZ
+        JMP     .maybez
+        JMP     .div
+.maybez: SXD    DBEND           ; zero divides away before the loop writes a
+        JMP     .zerod          ; digit, so it needs one of its own -- the same
+        JMP     .sign           ; special case DEC carries.  The index having
+.zerod: LAC     ZERO            ; moved is what says a digit was written.
+        TADX    MONE
+        DAC     (DBUFP) , X
+        JMP     .sign
+.div:   LAC     TEN
+        DAC     M2
+        CAL     DIV36           ; the quotient replaces the pair in place, so
+        LAC     MREM            ; the next round divides it without reloading
+        TAD     ZERO
+        TADX    MONE            ; back up one slot, AC untouched
+        DAC     (DBUFP) , X
+        JMP     .loop
+.sign:  LAC     NEGF
+        SKZ                     ; skip when there is no sign to write
+        JMP     .neg
+        JMP     .done
+.neg:   LAC     MINUS
+        TADX    MONE
+        DAC     (DBUFP) , X
+.done:  DIX     DPOS            ; where the digits begin
+        POP     IX
         RET
 
 ; =====================================================================
@@ -292,26 +588,26 @@ SQZ:    CLA
 DEC:    PSH     IX              ; the write index lives in IX, so callers that
         LAC     DVAL            ; keep something there must not lose it
         SAD     MOSTNEG
-        JMP     DECMN
+        JMP     .mostneg
         CLA
         DAC     NEGF
         LAC     DVAL
         AND     BIT17
         SKNZ                    ; skip only when the sign bit is set
-        JMP     DECP
+        JMP     .pos
         LAC     DVAL
         CIA
         DAC     DVAL
         CLA
         IAC
         DAC     NEGF
-DECP:   LIX     DBEND
+.pos:   LIX     DBEND
         LAC     DVAL
         SKNZ
-        JMP     DECZ
-DECL:   LAC     DVAL
+        JMP     .zero
+.loop:  LAC     DVAL
         SKNZ
-        JMP     DECS
+        JMP     .sign
         DAC     M1
         LAC     TEN
         DAC     M2
@@ -321,22 +617,22 @@ DECL:   LAC     DVAL
         TAD     ZERO
         TADX    MONE            ; back up one slot, AC untouched
         DAC     (DBUFP) , X
-        JMP     DECL
-DECZ:   LAC     ZERO
+        JMP     .loop
+.zero:  LAC     ZERO
         TADX    MONE
         DAC     (DBUFP) , X
-DECS:   LAC     NEGF
+.sign:  LAC     NEGF
         SKNZ
-        JMP     DECF
+        JMP     .fin
         LAC     MINUS
         TADX    MONE
         DAC     (DBUFP) , X
-DECF:   DIX     DPOS
+.fin:   DIX     DPOS
         POP     IX
         RET
 
 ; -131072 has no positive counterpart in 18 bits, so CIA cannot reach it
-DECMN:  LAC     ONE
+.mostneg: LAC     ONE
         DAC     DPOS
         CLA
         DAC     MSRC

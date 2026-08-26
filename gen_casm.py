@@ -19,8 +19,23 @@ G1_COMBO = [("NOP", []), ("CLC", ["CLA", "CMA"]), ("STL", ["CLL", "CML"]),
             ("LSR", ["CLL", "RRA"]), ("LSL", ["CLL", "RLA"]),
             ("GLK", ["CLA", "RLA"]),
             ("ONEA", ["CLA", "IAC"]), ("ONEX", ["CLA", "IXC"])]
+# The skip group, with the conditions the 18-bit family had: minus, zero and
+# link, OR'd together, with one bit inverting the result.  Skip-on-interrupts-
+# enabled was ours and DEC had no such thing; it belongs with the processor's
+# other state, which is device 0 in the IO group, so it lives there now and its
+# bit here goes to the sign.
+#
+# The DEC mnemonics are kept as aliases, because the combinations are what make
+# the group worth having and they are documented under those names: SMA+SZA is
+# "AC <= 0", SPA+SNA is "AC > 0".
 G2 = [("SKZ", 0, 1), ("SKNZ", 1, 1), ("SKL", 0, 2), ("SKNL", 1, 2),
-      ("SKI", 0, 4), ("SKNI", 1, 4), ("SKP", 1, 0)]
+      ("SKM", 0, 4), ("SKNM", 1, 4), ("SKP", 1, 0),
+      ("SZA", 0, 1), ("SNA", 1, 1), ("SNL", 0, 2), ("SZL", 1, 2),
+      ("SMA", 0, 4), ("SPA", 1, 4),
+      # The combinations are the point of an OR'd condition group, and the
+      # assembler emits one word per mnemonic, so they need names of their own.
+      ("SKLE", 0, 5), ("SKGT", 1, 5),      # AC <= 0, and AC > 0
+      ("SKLZ", 0, 6), ("SKGZ", 1, 6)]     # minus or link, and neither
 
 out = []
 w = out.append
@@ -125,6 +140,9 @@ for mn, val in (
         ("IMWR",   iot(0, 0, iop4=1)),
         ("IMSET",  iot(0, 1, iop4=1)),   # let the lines in AC through
         ("IMCLR",  iot(0, 2, iop4=1)),   # mask the lines in AC
+        ("SKI",    iot(0, 4, iop1=1)),   # skip when interrupts are on
+        ("SKNI",   iot(0, 5, iop1=1)),   # and when they are off
+        ("WAIT",   iot(0, 3, iop4=1)),   # stop fetching until a request arrives
         # device 5 is the bare-CPU test harness
         ("HTON",   iot(5, 0, iop4=1)),
         ("HTOFF",  iot(5, 1, iop4=1)),
