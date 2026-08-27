@@ -210,6 +210,5 @@ for mn, val in (("RET", OPRG3 | (1 << 11) | (1 << 1)),
     w("")
 
 text = "\n".join(out)
-# NWORD needs .out, not .return; patch that block
 open("pdp9x.casm", "w").write(text + "\n")
 print("wrote pdp9x.casm,", len(text.splitlines()), "lines")

@@ -1,9 +1,9 @@
-10 FOR I=0,9; SET A(I)=I*I
-20 TYPE "A(3) ", A(3), " A(9) ", A(9), !
-30 SET S=0
-40 FOR I=0,9; SET S=S+A(I)
-50 TYPE "SUM ", S, !
-60 SET K=2
-70 SET A(K+1)=99
-80 TYPE "A(3) NOW ", A(3), !
-90 QUIT
+01.010 FOR I=0,9; SET A(I)=I*I
+01.020 TYPE "A(3) ", A(3), " A(9) ", A(9), !
+01.030 SET S=0
+01.040 FOR I=0,9; SET S=S+A(I)
+01.050 TYPE "SUM ", S, !
+01.060 SET K=2
+01.070 SET A(K+1)=99
+01.080 TYPE "A(3) NOW ", A(3), !
+01.090 QUIT

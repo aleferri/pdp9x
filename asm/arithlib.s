@@ -1,8 +1,9 @@
 ; Arithmetic runtime shared by the sample programs.
-; Variables live at 0x300, code at 0x2000, both fixed so that an including
-; program can lay out its own zero page below and its own code above.
+; Variables at 0x300 and code at 0x1F000, each placed with its own .org, so
+; the file says where its two regions go and an including program does not
+; have to interleave them with its own.
 
-        .advance 0x300
+        .org    0x300
 M1:     .dd    0               ; multiplicand / dividend
 M2:     .dd    0               ; multiplier / divisor
 MRES:   .dd    0               ; product / quotient
@@ -71,7 +72,7 @@ MNTXT:  .dd    45
         .dd    50
         .dd    0
 
-        .advance 0x2000
+        .org    0x1F000
 ; =====================================================================
 ; ABS1 / ABS2: strip the sign of M1 / M2 without branching.  Only DIV needs
 ; these: restoring division requires genuinely unsigned operands, while the
@@ -533,47 +534,6 @@ DEC36:  PSH     IX
         DAC     (DBUFP) , X
 .done:  DIX     DPOS            ; where the digits begin
         POP     IX
-        RET
-
-; =====================================================================
-; DEC:  convert DVAL to decimal digits in DBUF, DPOS = digit count.
-;       A negative value emits a leading minus as character code 45.
-; =====================================================================
-; =====================================================================
-; ISQRT:  MRES <- floor(sqrt(M1)) for M1 >= 0, by Newton from above.
-;         The guess only ever falls, so the first value that fails to fall is
-;         the answer.  Halving uses LSR, which is safe because everything here
-;         is non negative.
-; =====================================================================
-ISQRT:  LAC     M1
-        SKNZ
-        JMP     SQZ
-        DAC     SQN
-        DAC     SQG
-SQL:    LAC     SQN
-        DAC     M1
-        LAC     SQG
-        DAC     M2
-        CAL     DIV             ; n / g
-        TAD     SQG
-        LSR                     ; ( g + n/g ) / 2
-        DAC     SQT
-        LAC     SQG
-        CIA
-        TAD     SQT             ; new - old
-        SKNZ                    ; skip while the guess is still falling
-        JMP     SQD
-        AND     BIT17
-        SKNZ
-        JMP     SQD             ; stopped falling: converged
-        LAC     SQT
-        DAC     SQG
-        JMP     SQL
-SQD:    LAC     SQG
-        DAC     MRES
-        RET
-SQZ:    CLA
-        DAC     MRES
         RET
 
 ; =====================================================================

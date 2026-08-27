@@ -2,14 +2,18 @@
 from sim import CPU, W, A
 
 # ---- address map -------------------------------------------------------
-# 0x000-0x003  interrupt vectors
-# 0x004-0x1FF  zero page variables
-# 0x200-0x3FF  screen, 512 words, 16 rows x 32 cols, 7-bit ASCII
-# 0x400        scroll command register (write only)
-# 0x401-0x7FB  more zero page variables
-# 0x7FC-0x7FF  timer: IRQ(ro) ACK(wo) ARM(so) THI(wo)
-# 0x1000-0x1FFF stack page
-SCREEN = 0x4000          # framebuffer, outside the zero page, write only
+# 0x00000-0x00007  interrupt vectors, one per device, entry 0 is reset
+# 0x00008-0x007FF  zero page variables: an operand addresses 11 bits, so
+#                  everything the code names directly has to live here
+# 0x00800-0x009FF  screen, 512 words, 16 rows x 32 cols, 7-bit ASCII
+# 0x01000-0x01FFF  stack, page 1, SP is 12 bits and cannot leave it
+# 0x02000-0x1EFFF  arena: program text grows up from the bottom, the heap grows
+#                  down from the top, and they meet in the middle
+# 0x1F000-0x1FFFF  interpreter: arithmetic runtime, code, command tables.  One
+#                  4K page because a direct CAL or JMP is PC-page relative, and
+#                  never written, so it can be ROM
+# Everything else is reached with IOT, not mapped into memory.
+SCREEN = 0x800           # framebuffer, just above the zero page, write only
 COLS, ROWS = 32, 16
 SCRSZ = COLS * ROWS
 

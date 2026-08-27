@@ -1,5 +1,5 @@
 ; Buffered console driver.
-;   framebuffer : 0x4000, 512 words, write only, one write per 8 cycles
+;   framebuffer : 0x800, 512 words, write only, one write per 8 cycles
 ;   blitter     : IOT dev 0  -- SCROLL, SKBSY, SKRDY
 ;   timer       : IOT dev 1  -- TLOAD, TARM, TACK, SKIRQ.  Times the scroll.
 ; During a scroll the framebuffer is deaf, so output is queued in BUF with the
@@ -35,7 +35,7 @@ C64:    .dd    64
 SPACE:  .dd    32
 NLCH:   .dd    10
 THIV:   .dd    226             ; (256-226)*256 = 7680 counts
-SCRP:   .dd    0x4000          ; framebuffer base
+SCRP:   .dd    0x800           ; framebuffer base
 ; ---- program driven state ----
 NLINE:  .dd   -24
 CH:     .dd    64

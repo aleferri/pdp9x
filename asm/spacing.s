@@ -13,7 +13,7 @@
         .dd     STOP    ; 7 spare
 CURS:   .dd    0
 CH:     .dd    65
-SCRP:   .dd    0x4000
+SCRP:   .dd    0x800
 THIV:   .dd    255             ; shortest period the timer allows, 256 counts
 N:      .dd   -300
 

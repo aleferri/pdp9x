@@ -26,14 +26,16 @@ Python 3.8 or later, no dependencies.
 Assembly is done with [casmeleon](https://github.com/aleferri/casmeleon), a
 retargetable assembler in Go by aleferri:
 
-Nothing needs patching any more. The two changes this machine used to carry in
-`patches/` — the `.dd` directive and backslash escapes in quoted literals —
-were merged upstream in `6af03b3`, so a plain checkout builds:
+One patch is needed, `patches/casmeleon-org-places-by-address.patch`: the memory
+map below cannot be assembled without it. Two older changes this machine carried
+were merged upstream in `6af03b3`, so their patches are gone; the three
+directives they and this one concern are described below.
 
 ```
 git clone --depth 1 https://github.com/aleferri/casmeleon
 cd casmeleon
 GOPROXY=direct GOSUMDB=off GOFLAGS=-mod=mod go get github.com/aleferri/casmvm@v0.2.9
+git apply /path/to/pdp9x/patches/casmeleon-org-places-by-address.patch
 GOPROXY=direct GOSUMDB=off go build -o casmeleon ./cmd/casmeleon
 ```
 
@@ -64,6 +66,15 @@ next `"` closed it, so a string could never contain one. It now honours `\\`,
 `\"`, `\n`, `\r`, `\t` and `\0`, with an unknown escape yielding the character
 itself so a stray backslash is never silently dropped.
 
+`.org` is the one that still needs patching. It places what follows at an
+address; `.advance` pads up to one. The difference only matters if a file wants
+to lay out regions in an order other than the order it reads in, which is
+exactly what putting the interpreter above the arena wants. As shipped `.org`
+did nothing: the driver skips items whose bytes cannot have changed and
+recomputes the address after them from the byte count, which is right for
+`.advance` and wrong for a directive that emits nothing, so a skipped `.org`
+silently did not move the address. `patches/README.md` has the rest.
+
 Then, from this directory:
 
 ```
@@ -78,10 +89,12 @@ patterns (8 opcodes by 2 register selectors by 4 addressing modes).
 Three casmeleon constraints shaped the definition, and are worth knowing before
 editing it:
 
-- Opcode arguments are **single tokens**. No expressions, no negative
-  literals — hence the `NWORD` pseudo-opcode for negative constants.
+- Opcode arguments are **single tokens**. No expressions and no negative
+  literals, which is why negative constants are `.dd` data rather than operands.
 - `.db` and `.dw` stay 8 and 16 bits wide even at `-byteSize=32`; `.dd` follows
   the byte size.
+- `.org` places what follows at an address and may run backwards; `.advance`
+  pads up to one and may not. Both need the patch in `patches/` to work at all.
 - Every `.set` member needs a trailing `;`, **including the last one**.
   Omitting it reports only `Unexpected Error`, with no line number.
 - `.include` resolves relative to the **including file**, not the working
@@ -99,15 +112,17 @@ re-evaluation, the check is guarded with `a != 0`.
 | | |
 |---|---|
 | `SPEC.md` | architecture specification |
+| `MICROCODE.md` | the control store, and `ucode.py` which assembles it |
 | `sim.py` | CPU core: decode, execute, cycle accounting |
-| `machine.py` | blitter and timer on IOT, framebuffer at `0x4000` |
+| `machine.py` | blitter and timer on IOT, framebuffer at `0x800` |
 | `model.py` | Python model of the console algorithm, used to debug it |
 | `run.py` | CPU invariant tests |
 | `bench.py` | runs everything and reports |
 | `gen_casm.py` | generates `pdp9x.casm` |
-| `mkprog.py` | turns a FOCAL `.fc` source into WORD directives |
+| `mkprog.py` | compiles a FOCAL `.fc` source into the stored line format |
 | `pdp9x.casm` | casmeleon instruction set definition |
 | `build.sh` | regenerate and assemble |
+| `patches/` | the one casmeleon patch the build needs, and why |
 
 ## Sample programs
 
@@ -163,7 +178,9 @@ line separated by semicolons, over an expression evaluator with `+ - * / ^`,
 parentheses, unary minus, subscripted variables `A(i)` and the functions
 `FABS`, `FSGN`, `FITR`, `FSQT`, `FLEN`. `IF` takes one, two or three targets
 and falls through when the arm it wants is not there. `ASK` prompts with the
-variable name and a colon. Control C stops a running program with `?C`.
+variable name and a colon. Control C stops a running program with `?C`. Line
+numbers are fixed point `gg.sss` and `DO gg` runs a whole group; see *Line
+numbers*.
 
 ### Two programs that are not benchmarks
 
@@ -207,17 +224,18 @@ converses. A line beginning with a number is filed away, anything else runs at
 once, and a bare number deletes that line:
 
 ```
-*10 TYPE "ONE", !
-*30 TYPE "THREE", !
-*20 TYPE "TWO", !          filed in numeric order, not typing order
-*40 QUIT
-*20 TYPE "TWO BIS", !      replaces line 20
-*30                        deletes line 30
+*01.010 TYPE "ONE", !
+*01.030 TYPE "THREE", !
+*01.020 TYPE "TWO", !          filed in numeric order, not typing order
+*01.040 QUIT
+*01.020 TYPE "TWO BIS", !      replaces line 01.020
+*01.030                        deletes line 01.030
 *WRITE
-10 TYPE "ONE", !
-20 TYPE "TWO BIS", !
-40 QUIT
-*GOTO 10
+01.010 TYPE "ONE", !
+01.020 TYPE "TWO BIS", !
+01.040 QUIT
+*GOTO 1.5                      the step is padded: 1.5 is 01.500
+*GOTO 01.010
 ONE
 TWO BIS
 ```
@@ -227,14 +245,15 @@ stored program or at the line just typed. `RESET` looks at the first word of
 the program area: assembled in, it runs and stops; empty, it prompts. So every
 batch program above still works unchanged.
 
+The program area ends where the framebuffer begins, and a store that would not
+fit is refused with `?S`. It used to walk straight past into the screen.
+
 An error abandons the stack and returns to the prompt — the stack lives in a
 fixed page precisely so that this costs two instructions — but in a batch image
 there is nobody to return to, so it stops instead.
 
 What is left is **floating point**, which is the substrate of the real language
-and was replaced on purpose, and with it the fractional line numbers that make
-`DO 1` mean "the whole of group 1". `LIBRARY` and `MODIFY` sit behind mass
-storage.
+and was replaced on purpose. `LIBRARY` and `MODIFY` sit behind mass storage.
 
 `FOR v=start,step,limit; body` re-runs the rest of its own line, so the loop
 just rewinds the text pointer and calls the body again; the loop variable lives
@@ -243,21 +262,35 @@ in the ordinary variable table, as FOCAL specifies, so the body can read it.
 first value that fails to fall is the answer.
 
 ```
-10 COMMENT TRIANGULAR NUMBERS AND A THREE WAY TEST
-20 SET A=7
-30 SET B=A*(A+1)/2
-40 TYPE "SUM TO ", A, " IS ", B, !
-50 IF (B-28) 80, 60, 80
-60 TYPE "TWENTY EIGHT, AS EXPECTED", !
+01.010 COMMENT TRIANGULAR NUMBERS AND A THREE WAY TEST
+01.020 SET A=7
+01.030 SET B=A*(A+1)/2
+01.040 TYPE "SUM TO ", A, " IS ", B, !
+01.050 IF (B-28) 01.080, 01.060, 01.080
+01.060 TYPE "TWENTY EIGHT, AS EXPECTED", !
 ```
 
-`DO n` runs line *n* as a subroutine and then carries on after the `DO`. The
-main loop calls a `STEP` subroutine that executes exactly one line, so a line
-can be run from inside another line and the nesting rides entirely on the
-hardware stack — two words per level, no interpreter state to save. `DO` inside
-`DO` therefore works without a single line of extra code, which is the one
-place where this machine's stack earns its keep over the PDP-8 it descends
+`DO gg.sss` runs that line as a subroutine and then carries on after the `DO` —
+on the same line, so `DO 02.010; TYPE T` prints what the subroutine left, which
+is what FOCAL does. It used to swallow the rest of its line.
+The main loop calls a `STEP` subroutine that executes exactly one line, so a
+line can be run from inside another line and the nesting rides entirely on the
+hardware stack — a few words per level, no interpreter state to save. `DO`
+inside `DO` therefore works without a single line of extra code, which is the
+one place where this machine's stack earns its keep over the PDP-8 it descends
 from.
+
+`DO gg`, a group with no step, runs every line of the group in turn. The walk
+needs a cursor and the group's upper end, and both ride on the stack rather
+than in the zero page, because a nested `DO` would otherwise overwrite the
+outer walk. `RETURN` abandons the rest of the group and not just the rest of
+the line, which is what lets a subroutine spread over several lines leave from
+the middle of the first.
+
+A `DO` typed at the prompt now comes back to the prompt. `FIND` moves both the
+text pointer and the run/converse flag into the stored program, and the old
+`DO` restored neither, so `DO 01.010` at the prompt ran on from there as if it
+had been a `GOTO`. Both are saved with the return position.
 
 `ASK` reads decimal numbers from the keyboard, which has four registers: the
 raw code, the modifiers held with it, a status flag and an acknowledge. A
@@ -320,9 +353,10 @@ the wrong place. A call profile found it in one measurement.
 ### Two types
 
 FOCAL has exactly one type, floating point: variables hold it, expressions
-evaluate to it, and line numbers *are* it, which is why `1.10` works and why
-`DO 1` can mean "the whole of group 1". Replacing that single type with 18-bit
-integers is therefore not a missing feature, it is a different language.
+evaluate to it, and line numbers *are* it. Replacing that single type with
+18-bit integers is therefore not a missing feature, it is a different language.
+Line numbers are the one place the original type survives in shape, as fixed
+point rather than float — see *Line numbers* below.
 
 Variable names are a letter, optionally followed by a letter or a digit, with
 only the first two characters significant — FOCAL's own rule.
@@ -411,6 +445,203 @@ four temporaries; `IX` carries the write index throughout, stepped back by
 `asm/arithlib.s` holds multiply, divide and decimal conversion at fixed
 addresses (variables at `0x300`, code at `0x2000`) so both `arith.s` and
 `focal.s` can include it and lay out their own zero page below and code above.
+
+### Line numbers
+
+A line number is fixed point, `gg.sss`: two digits of group and three of step,
+held in one word as `group*1000 + step`. That is the numeric order too, so the
+line index and the insertion search compare words and nothing has to be
+unpacked. The step is padded on the right, so `1.5`, `01.500` and `1.500` are
+one line, exactly as they were when the number was a float.
+
+Written without a point it is a group, which is what `DO` takes. That leaves no
+room for a line with a step of zero, and none is wanted: `01.000` would be
+indistinguishable from group 1. The four shapes FOCAL itself refused are
+refused here, all as `?L` — group zero, a group above 99, a fourth digit of
+step, and a second point — as are a jump to a line that does not exist and a
+`DO` of a group that does not.
+
+The historical language used **two** decimals, `01.10`, with groups 1 to 31.
+Three is a deliberate widening: `99.999` is 99999, which still fits an 18-bit
+word with room to spare.
+
+One parser serves the lot. There used to be four hand-copied decimal scanners —
+one per buffer the interpreter reads: program text through `TXTP`, program text
+through `TXTB`, the typed line in `LBUF`, and the index build — plus duplicate
+`SKSP` and `EOL` for the second of those. Putting the fixed point rule in four
+places was not an option, so the callers now aim `TXTP` at the buffer they want
+and share `RDLN`; `LIRDN`, `LISKSP`, `LIEOL` and their three scratch words are
+gone.
+
+`RDLN` uses one accumulator and no multiply: the step's digits go into the
+packed number as they arrive, and the padding that turns `1.5` into `01.500` is
+the same times-ten run again. Calling the general multiplier for a constant is
+the mistake this interpreter already made once, in the number parser, and it
+cost half a loop-heavy program. Nobody ever asks for the step's *value*, only
+whether it is zero, so its digits are summed rather than accumulated — the sum
+is zero exactly when every digit was — and whether there is a number here at
+all is a property of the first character, tested once before the loop rather
+than re-flagged on every digit.
+
+Callers that only need the pointer moved use `SKLN`, which walks digits and a
+point and computes nothing — `STEP`, which parses the number of every line it
+runs and whose value nobody reads, and the line editor. `IF` steps over the
+targets it is not going to take instead of evaluating and discarding them. The
+index stores the position of the **body**, past the number, so a jump does not
+re-parse a number the index build already parsed.
+
+### Memory map
+
+| | | words | |
+|---|---|---|---|
+| `0x00000`–`0x00007` | interrupt vectors | 8 | entry *n* is device *n*, entry 0 is reset |
+| `0x00008`–`0x007FF` | zero page variables | 760 + 1280 | an operand addresses 11 bits, so everything named directly lives here |
+| `0x00800`–`0x009FF` | framebuffer | 512 | 16×32, write only |
+| `0x01000`–`0x01FFF` | stack | 4096 | page 1; `SP` is 12 bits and cannot leave it |
+| `0x02000`–`0x1EFFF` | arena | 118784 | program text up from the bottom, heap down from the top |
+| `0x1F000`–`0x1FFFF` | interpreter | 4096 | arithmetic runtime, code, command tables |
+
+Two things decide this shape. The **zero page** is fixed by the instruction
+word: a memory reference carries 11 bits, so every variable has to sit below
+`0x800` whatever else moves. And the **interpreter is one 4K page** because a
+direct `CAL` or `JMP` is PC-page relative over 12 bits, so code that jumps to
+its own labels has to share a page with them.
+
+The interpreter is at the top and **nothing writes to it** — `bench.py` fails
+the run if any address at or above `0x1F000` is written while the samples, the
+command level and the string allocator work, so it could be ROM. That held by
+accident until a name table built at reset broke it, which is why the check is
+there rather than assumed. The interrupt vectors are still RAM at address zero
+and are part of the image: on real hardware they would have to arrive from ROM
+at reset, which is not solved here.
+
+The **arena has one boundary, not two ceilings**. Text grows up, the heap grows
+down, and both `STORE` and `HCARVE` test the same comparison, so neither side
+can be overrun without the other noticing. Before this the text had a fixed
+ceiling and the heap had none at all: a program that filled the text area wrote
+over the framebuffer, and a program that exhausted the heap kept carving.
+
+The arithmetic runtime shares that page, because a direct `CAL` cannot leave
+one: `arithlib.s` places its variables at `0x300` and its code at `0x1F000`
+with an `.org` each, and every program that includes it puts its own code in
+the same page. The five small test programs moved up with it.
+
+Each file says where its own regions go and no longer cares what order they
+appear in — which needs the `.org` fix in `patches/`. `focal.s` has two `.org`
+and puts the program text last, at `0x2000`, where it reads best.
+
+### The stored form
+
+Lines are not stored as typed. A stored line is a key word, its length in
+words, a body, and a newline, so the next line starts at `start+length`; a body
+word is either a character or a tagged item, told apart by bit 16, which a
+character never carries:
+
+    0 0xxxxxxx          a character, kept byte for byte
+    1 0000 dnnnlllll    a command: letter, letters written, trailing point
+    1 0010 .......g     a line number follows in the next word; g marks one
+                        written without a point, which names a group
+
+Only three things are replaced, so only three need encoding, and the text
+between them is verbatim -- which is why spacing costs nothing and needs no
+counting.  A line number needs 17 bits on its own, 99*1000+999 being 99999, so
+there is no room beside it for a tag: hence the marker and a word of its own.
+Where a line number may appear is fixed by the command that introduced it, so
+it carries no tag.
+
+An abbreviated command carries the point — `G.` and `GO.` are commands, a bare
+`G` is not, and an abbreviation missing its point stays the characters it was.
+The point is **stored** rather than derived from the count of letters, because
+it is also allowed after the whole name: `TYPE` and `TYPE.` are both commands
+and are different text, so the compression has to tell them apart. `focal/
+abbrev.fc` holds all four spellings and the round trip covers them.
+
+That FOCAL's commands are told apart by their first letter is what makes this
+cheap: `AND C31` on a command word yields the letter exactly as it did on a
+character, so **the dispatch table did not change at all**.  `SKIPW`, which
+existed to step over the rest of `GOTO`, became one `IXC` and then went away.
+`STEP` reads its key and steps past it.  `LIBUILD` parses nothing.  `TNUM`,
+`RDLNUM`, `LBLENF`, `LBODYQ` and `SKLN` are gone: asking the compiled line
+whether it has a body is simpler than re-scanning the characters that made it.
+
+`mkprog.py` is the compiler.  A line typed at the prompt is compiled too --
+even an immediate one, because `BODY` dispatches on a command word -- by the
+same rules, which is what `COMP` and `CCMD` do.  A command word is emitted only
+when the letters typed are a spelling of a real command, so `G`, `GO` and
+`GOTO` are commands while `XYZ` is left as the characters it was and still
+dispatches to `CUNK` through its letter.
+
+There are two tables, and only one of them is written out. A command's letter
+is its own first character, so the table `WRITE` indexes by letter is built at
+reset from a flat list of names rather than spelled out a second time. The
+other direction cannot be derived: `CTAB` holds jumps, and an address carries
+no letters, so adding a command means a name in the list and a `JMP` in the
+table. `bench.py` checks they agree — every letter that dispatches has a name,
+or `WRITE` would spell it as question marks. The reverse is allowed and
+`COMMENT` uses it: a comment is meant to be skipped, so the default entry is
+its handler.
+
+`WRITE` is the decompression, and the compression is lossless but for one
+thing: a line number comes back canonical, `gg.sss`, or `gg` when the step is
+zero and it named a group.  So `1.5` lists as `01.500` -- which is what FOCAL
+did anyway, and closes a gap this interpreter used to have.  `bench.py` lists
+every sample back out and diffs it against the `.fc`: 379 lines, none
+differing.  That test is what stops the compiler and the lister drifting apart.
+
+Reading a line number went from six characters to two words, and the cost of
+the whole change lands well under where it started:
+
+Each column below was measured when that change landed, so the last one is the
+reduced form on its own and not the figure today — the length word and the walk
+that replaced the line index came after it. Current numbers at the end of this
+section.
+
+| | before line numbers | fixed point | reduced |
+|---|---|---|---|
+| `focal.bin`, sum.fc | 49167 cycles | 55373 | 44173 |
+| loop.fc | 196042 cycles | 217626 | 159251 |
+| hamurabi | 650039 instrs | 661080 | 615511 |
+
+The stored program is 71% of the characters it came from, not the half I first
+guessed: most of a line is expression and string text that stays verbatim. The
+gain is time, not space, and the time does not depend on that ratio.
+
+Where it stands now, against the same starting point, with everything since
+included — the length word, the walk that replaced the index, and `CNLOOK`:
+
+| | before | now | |
+|---|---|---|---|
+| `focal.bin`, sum.fc | 49167 cycles | **39479** | −19.7% |
+| loop.fc | 196042 cycles | **157139** | −19.8% |
+| hamurabi | 650039 instrs | **603783** | −7.1% |
+| do.fc | — | 23269 instrs | sample rewritten, not comparable |
+
+The sieve numbers elsewhere in this file are untouched by any of it: 912398
+cycles down to 514770 still, since none of this is on that path.
+
+The rope index of `<key, position>` pairs is gone, and getting there took two
+attempts worth recording. A key as one word makes looking a line up a walk over
+the lines, so the chunks, the build and the invalidation on every edit ought to
+be unnecessary — but measured that way, hamurabi cost **46% more**. The walk had
+to scan each body with `EOL`, so it cost the words of the program rather than
+the count of its lines, and paid that on every jump.
+
+The missing piece was the length word, which had been sketched with the format
+and then dropped on the wrong measurement: `EOL` was 0.7% of `loop.fc`, but `EOL`
+is called from the middle of a line and cannot use a length, while a walk starts
+at line heads and can. With `start+length` the step is an add, and the index has
+nothing left to buy:
+
+| | index, no length | index and length | walk by length |
+|---|---|---|---|
+| sum.fc | 45148 cycles | 42069 | 40425 |
+| loop.fc | 160226 cycles | 160602 | 158085 |
+| do.fc | 20958 instrs | 19902 | 15748 |
+| hamurabi | 615819 instrs | 606280 | 604080 |
+
+Nothing got slower. Short jump-heavy programs gain most, because they no longer
+pay for a build they barely use; hamurabi comes out level with a fraction of the
+machinery. What is left of all of it is `LINEXT`, a compare and an add per line.
 
 ### return_link.s
 

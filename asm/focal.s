@@ -6,15 +6,25 @@
 ; Arithmetic is 18-bit integer, not FOCAL's floating point: the machine has
 ; no floating unit and the point here is the interpreter, not the numerics.
 ;
+; A stored line is a key word, its length in words, a body, and a newline.  The
+; length counts the whole line, so the next one starts at start+length and
+; walking the lines costs an add rather than a scan.
+;
+; A line number is fixed point, gg.sss: two digits of group and three of step,
+; held in one word as group*1000 + step.  That ordering is the numeric one, so
+; the line index and the insertion search compare words.  Written without a
+; point it is a group, which is what DO takes: DO 2 runs every 02.sss line in
+; turn.  A step is padded on the right, so 2.1 and 02.100 are one line.
+;
 ; The program text sits in memory as one blob, lines separated by newline,
 ; terminated by a zero word:
 ;
-;     10 SET A=7
-;     20 SET B=A*(A+1)/2
-;     30 TYPE "SUM ", B, !
-;     40 IF (B-28) 60, 50, 60
-;     50 TYPE "OK", !
-;     60 QUIT
+;     01.010 SET A=7
+;     01.020 SET B=A*(A+1)/2
+;     01.030 TYPE "SUM ", B, !
+;     01.040 IF (B-28) 01.060, 01.050, 01.060
+;     01.050 TYPE "OK", !
+;     01.060 QUIT
 ;
 ; The evaluator is recursive descent, which the machine supports directly
 ; because CAL and RET use the hardware stack:
@@ -32,7 +42,7 @@
         .dd     STOP    ; 7 spare
 
 ; ---- interpreter state ----
-LNUM:   .dd    0               ; line number just parsed
+LNUM:   .dd    0               ; number of the line being filed away
 NUM:    .dd    0               ; number under construction
 DIGIT:  .dd    0
 TMPV:   .dd    0
@@ -52,25 +62,64 @@ CTABP:  .dd    CTAB
 TXTP:   .dd    TEXT            ; the text being read, program or typed line
 TXTB:   .dd    TEXT            ; the stored program, always
 LBUFA:  .dd    LBUF
-SCRP:   .dd    0x4000
+SCRP:   .dd    0x800            ; the framebuffer, clear of the arena
 C512:   .dd    512
 C480:   .dd    480
 C32:    .dd    32
 SPC:    .dd    32
 NLC:    .dd    10
-LIROOT: .dd    0                ; first chunk, zero when not built
-LICUR:  .dd    0
-LICNT:  .dd    0
-LIN:    .dd    0
-LIP:    .dd    0
 LIT:    .dd    0
-C254:   .dd    254
-C255:   .dd    255
-C256:   .dd    256
-C127:   .dd    127
-LIRA:   .dd    0
-LIRD:   .dd    0
-LIRT:   .dd    0
+LNV:    .dd    0                ; a line number, gg.sss packed as gg*1000+sss
+LSOR:   .dd    0                ; the step's digits summed: zero for a group
+LFD:    .dd    0                ; digits of step read so far
+LIB:    .dd    0                ; lower bound handed to LIGE
+LIGV:   .dd    0                ; the number LIGE settled on
+LIGP:   .dd    0                ; and its position
+LIGN:   .dd    0
+LIGQ:   .dd    0
+DOGL:   .dd    0                ; last number the group under DO can hold
+DOGF:   .dd    0                ; the DO names a group, not a line
+DORF:   .dd    0                ; RETURN seen: unwind the DO
+C3:     .dd    3
+C999:   .dd    999
+M999:   .dd   -999
+M100:   .dd   -100
+MTWO:   .dd   -2
+DOT:    .dd    46               ; '.'
+ITEMB:  .dd    0x10000          ; set on a tagged word, never on a character
+LNMASK: .dd    0x1E000          ; the tag field of an item word
+LNTAG:  .dd    0x12000          ; ... and the pattern that means a line number
+LNMK:   .dd    0                ; the marker just read
+C1000:  .dd    1000
+C100:   .dd    100
+C2:     .dd    2
+ZEROC:  .dd    48               ; '0'
+WKEY:   .dd    0
+WSTEP:  .dd    0
+WCH:    .dd    0
+WN:     .dd    0
+WCH2:   .dd    0
+CBUFP:  .dd    CBUF
+CDOTB:  .dd    0x100            ; in a command word: a trailing point
+CNAMP:  .dd    CNAMES
+CNL:    .dd    0
+CNLI:   .dd    0
+CO:     .dd    0                ; where the next compiled word goes
+CKEY:   .dd    0                ; key of the line compiled, zero when none
+CPQ:    .dd    0                ; inside a quoted string
+CPW:    .dd    0                ; letters in the command word, zero for none
+CK:     .dd    0
+CPT:    .dd    0
+CEMT:   .dd    0                ; CEMIT's own, so it stomps no caller's temp
+CN:     .dd    0
+CLTR:   .dd    0                ; the command letter as typed
+CNAME:  .dd    0
+CTGT:   .dd    0                ; line numbers still expected
+CDEP:   .dd    0
+CSAVE:  .dd    0
+CDCH:   .dd    68               ; 'D'
+GRPBIT: .dd    1                ; in a marker: the number named a group
+ERRL:   .dd    76               ; ?L bad, absent or unreachable line number
 QUOTE:  .dd    34
 COMMA:  .dd    44
 LPAR:   .dd    40
@@ -118,9 +167,10 @@ ERRT:   .dd    84              ; ?T unknown type
 ERRB:   .dd    66              ; ?B subscript outside the array
 AVB:    .dd    0
 ERRF:   .dd    70              ; ?F float not implemented
+ERRS:   .dd    83              ; ?S no room left for the program
+HALLOC: .dd    0                ; the block HALLOC just carved
 SADDR:  .dd    0
 SADDR2: .dd    0
-SAT:    .dd    0
 SOFF:   .dd    0
 SCH:    .dd    0
 SLM1:   .dd    19              ; last usable slot in a string
@@ -151,7 +201,6 @@ VLB:    .dd    0
 VLT:    .dd    0
 VADR:   .dd    0
 VVAL:   .dd    0
-C26:    .dd    26
 C520:   .dd    520
 C104:   .dd    104
 C20:    .dd    20
@@ -173,8 +222,8 @@ SGKEEP: .dd    0
 VLN:    .dd    0
 C63:    .dd    63
 C37:    .dd    37
-HEAPBV: .dd    HEAPB
-HEAP:   .dd    HEAPB
+HEAPTOP: .dd   0x1F000          ; the arena ends where the interpreter begins
+HEAP:   .dd    0x1F000          ; and the heap grows down from there
 VPTR:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -214,7 +263,6 @@ BATCH:  .dd    0
 STARC:  .dd    42              ; '*'
 LOFF:   .dd    0
 LBMAX:  .dd    62
-LBLEN:  .dd    0
 TEND:   .dd    0
 TPOS:   .dd    0
 TNEXT:  .dd    0
@@ -225,6 +273,11 @@ TSRC:   .dd    0
 TDST:   .dd    0
 TCH:    .dd    0
 LBUF:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+CBUF:   .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         .dd    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -247,7 +300,11 @@ C26:    .dd    26
 
         .include "arithlib.s"
 
-        .advance 0x2400
+; The interpreter lives in the last 4K page, and so does the arithmetic runtime
+; it calls: a direct CAL or JMP is PC-page relative over twelve bits, so code
+; and the code it calls have to share a page.  Nothing up here is ever written
+; -- bench.py fails the run if anything is -- so all of it can be ROM.
+        .org    0x1F400
 
 ; =====================================================================
 ; console: write only framebuffer, one character per 8 cycles, scroll by
@@ -326,10 +383,14 @@ PNUMX:  POP     IX
 
 
 ; =====================================================================
-; String variables.  A$ through Z$, twenty words each, NUL terminated, in a
-; table of their own: A and A$ are different variables, exactly as in BASIC.
-; SADDR holds the address of the one being worked on, computed as
-; base + 20*index with shifts, since 20 = 16 + 4.
+; String variables.  Declared, not spelled: SET A AS STRING, because in FOCAL
+; the BASIC suffixes are taken -- % is TYPE's format control, and so are ! and
+; #.  So A is one variable whose type sits in a table beside it, not two
+; variables called A and A$.
+;
+; A name holds a pointer and the body is carved from the heap on first use, in
+; one of two sizes.  SADDR holds the address of the body being worked on and
+; SLM1 its real capacity, which is why nothing here knows a stride.
 ; =====================================================================
 
 ; print the string at SADDR
@@ -369,28 +430,28 @@ SCOPD:  POP     IX
 ; =====================================================================
 CMDL:   CLA
         DAC     BRK
+        DAC     DORF
         DAC     INPROG
         LAC     STARC
         CAL     PUTC
         CAL     RDLINE          ; GETK has already echoed the newline
-        LAC     LBUFA           ; read from the typed line
+        LAC     LBUFA
         DAC     TXTP
         LIX     NIL
         CAL     SKSP
         LAC     (TXTP) , X
         SKNZ
         JMP     CMDL            ; nothing typed
-        TAD     M0C
-        DAC     DIGIT
-                SKNM                    ; skip when not negative
-        JMP     CMDEX
-        LAC     DIGIT
-        TAD     M10
-                SKM                     ; skip when negative
-        JMP     CMDEX           ; not a digit, so run it now
+        CAL     COMP            ; the interpreter runs words, not characters,
+        LAC     CKEY            ; so a typed line is compiled either way
+        SKNZ
+        JMP     CMDEX           ; no number, so run it now
         CAL     STORE
         JMP     CMDL
-CMDEX:  CAL     BODY
+CMDEX:  LAC     CBUFP
+        DAC     TXTP
+        LIX     NIL
+        CAL     BODY
         LAC     INPROG          ; a GOTO moves us into the stored program
         SKNZ
         JMP     CMDL
@@ -440,27 +501,9 @@ TLEND:  PSH     IX
 ; number of the line at TPOS into TVAL, and TNEXT past its end
 TNUM:   PSH     IX
         LIX     TPOS
-        CLA
-        DAC     TVAL
-TNUML:  LAC     (TXTB) , X
-        TAD     M0C
-        DAC     DIGIT
-                SKNM                    ; skip when not negative
-        JMP     TNUMD
-        LAC     DIGIT
-        TAD     M10
-                SKM                     ; skip when negative
-        JMP     TNUMD
-        LAC     TVAL
-        SHA
-        DAC     T10
-        SHA
-        SHA
-        TAD     T10
-        TAD     DIGIT
+        LAC     (TXTB) , X      ; the key heads the line, so there is no parse
         DAC     TVAL
         IXC
-        JMP     TNUML
 TNUMD:  LAC     (TXTB) , X
         SKNZ
         JMP     TNUMF
@@ -564,136 +607,100 @@ TINSD:  LAC     TEND
 
 ; file the typed line away, replacing any line with the same number.  A bare
 ; number deletes that line, which is how FOCAL does it too.
-STORE:  CAL     LIDROP          ; an edit moves text: every position after the
-                                ; insertion point changes, so drop the index
-                                ; and let the next jump rebuild it
-        CAL     RDLNUM          ; LNUM, and LBODY at the first body character
+STORE:          LAC     CKEY            ; COMP has already read it
+        DAC     LNUM
         CAL     TLEN
         CAL     LFIND
         LAC     TMATCH
         SKNZ
         JMP     STNOD
         CAL     TDEL
-STNOD:  CAL     LBLENF
-        LAC     LBLEN
+STNOD:  CAL     STBODY          ; a bare number deletes and nothing more
         SKNZ
-        RET                     ; nothing but a number: the deletion is all
-        TAD     ONE             ; room for the trailing newline too
-        DAC     TGAP
-        CAL     TINS
+        RET
+        LAC     CO
+        DAC     TGAP            ; the compiled line, newline and all
+        TAD     TEND            ; the text would end here
+        TAD     TXTB
+        CIA
+        TAD     HEAP            ; and the heap begins here
+        AND     BIT17
+                SKNZ                    ; skip when the two would collide
+        JMP     STROOM
+        LAC     ERRS
+        JMP     ERROR
+STROOM: CAL     TINS
         CLA
         DAC     TSRC
         LAC     TPOS
         DAC     TDST
-STCL:   PSH     IX
+STCL:   LAC     TSRC
+        SAD     CO              ; skip while words remain
+        RET
+        PSH     IX
         LIX     TSRC
-        LAC     LBUF , X
+        LAC     (CBUFP) , X
         DAC     TCH
         LIX     TDST
         LAC     TCH
         DAC     (TXTB) , X
         POP     IX
-        LAC     TCH
-        SKNZ
-        JMP     STCD
         ISZ     TSRC
         NOP
         ISZ     TDST
         NOP
         JMP     STCL
-STCD:   PSH     IX
-        LIX     TDST
-        LAC     NLC             ; the copied terminator becomes a newline
-        DAC     (TXTB) , X
-        POP     IX
-        RET
 
-; the number the typed line begins with
-RDLNUM: PSH     IX
-        LIX     NIL
+; STBODY: nonzero when the compiled line holds anything but its key, spaces
+; and the newline.  A number with nothing after it deletes its line, which is
+; how FOCAL does it, and asking the compiled form is simpler than re-scanning
+; the characters that produced it.
+STBODY: PSH     IX
+        LAC     MTWO            ; past the key and the length
+        CIA
+        DAC     CK
+STBL:   LAC     CK
+        SAD     CO              ; skip while words remain
+        JMP     STBNO
+        LIX     CK
+        LAC     (CBUFP) , X
+        DAC     CPT
+        SAD     SPC             ; skip when it is not a space
+        JMP     STBN
+        LAC     CPT
+        SAD     NLC             ; skip when it is not the newline
+        JMP     STBN
+        JMP     STBYES          ; anything else is a body
+STBN:   ISZ     CK
+        NOP
+        JMP     STBL
+STBYES: POP     IX
         CLA
-        DAC     LNUM
-RDLNL:  LAC     LBUF , X
-        TAD     M0C
-        DAC     DIGIT
-                SKNM                    ; skip when not negative
-        JMP     RDLND
-        LAC     DIGIT
-        TAD     M10
-                SKM                     ; skip when negative
-        JMP     RDLND
-        LAC     LNUM
-        SHA
-        DAC     T10
-        SHA
-        SHA
-        TAD     T10
-        TAD     DIGIT
-        DAC     LNUM
-        IXC
-        JMP     RDLNL
-RDLND:  POP     IX
+        IAC
         RET
-
-; length of the typed line, zero when it is only a number and spaces
-LBLENF: PSH     IX
-        LIX     NIL
+STBNO:  POP     IX
         CLA
-        DAC     LBLEN
-LBLL:   LAC     LBUF , X
-        SKNZ
-        JMP     LBLD
-        IXC
-        JMP     LBLL
-LBLD:   PSH     IX
-        POP     AC
-        DAC     LBLEN
-        POP     IX
-        LAC     LBLEN
-        SKNZ
         RET
-        CAL     LBODYQ          ; a number with nothing after it deletes
-        RET
-
-; is there anything past the number and the spaces?
-LBODYQ: PSH     IX
-        LIX     NIL
-LBQL:   LAC     LBUF , X
-        TAD     M0C
-                SKNM                    ; skip when not negative
-        JMP     LBQ1
-        IXC
-        JMP     LBQL
-LBQ1:   LAC     LBUF , X
-        SAD     SPC
-        JMP     LBQ2
-        JMP     LBQ3
-LBQ2:   IXC
-        JMP     LBQ1
-LBQ3:   LAC     LBUF , X
-        SKNZ
-        JMP     LBQE
-        POP     IX
-        RET
-LBQE:   CLA
-        DAC     LBLEN
-        POP     IX
+; HCARVE: the words wanted in AC -> the base of a fresh block.  The heap grows
+; down from the top of the arena while the program text grows up from the
+; bottom, so the two need one test between them rather than a ceiling each: a
+; block that would reach below the end of the text is refused with ?S.
+HCARVE: CIA
+        TAD     HEAP
+        DAC     HALLOC          ; where the block would start
+        LAC     TEND            ; the text's end, as an address
+        TAD     TXTB
+        CIA
+        TAD     HALLOC
+        AND     BIT17
+                SKNZ                    ; skip when it would reach the text
+        JMP     HCOK
+        LAC     ERRS
+        JMP     ERROR
+HCOK:   LAC     HALLOC
+        DAC     HEAP
         RET
 
-; =====================================================================
-; Variables, two levels deep and allocated on demand.
-;
-; The second character of a name picks one of thirty-seven classes -- none, a
-; letter, a digit -- and each class owns a block of twenty-six entries, one per
-; first letter.  The class pointers live in the zero page and start empty; a
-; block is carved off the heap the first time a name in that class is used.  A
-; program that only writes A through Z therefore pays for twenty-six entries,
-; not for the whole cross product, and no name has to be multiplied out: two
-; indexed reads replace the stride arithmetic entirely.
-;
-; The four kinds are allocated separately, so a program with no strings never
-; pays for the twenty words per letter that strings would want.
-; =====================================================================
 ; VLOOK: VLPT names a pointer table, VLSZ the size of one block.  Returns the
 ; block base in AC, carving and clearing it if this class is new.
 VLOOK:  PSH     IX
@@ -705,12 +712,10 @@ VLOOK:  PSH     IX
         POP     IX
         LAC     VLB
         RET
-VLNEW:  LAC     HEAP
+VLNEW:  LAC     VLSZ
+        CAL     HCARVE
         DAC     VLB
         DAC     (VLPT) , X
-        LAC     HEAP
-        TAD     VLSZ
-        DAC     HEAP
         LIX     NIL             ; a fresh block reads as zero
         CLA
 VLCLR:  DAC     (VLB) , X
@@ -764,10 +769,9 @@ SALT:   SKNZ
 SALU8:  LAC     SAT
         DAC     FL8
         JMP     SALCL
-SALNEW: LAC     HEAP
+SALNEW: LAC     SASZ
+        CAL     HCARVE
         DAC     SAP
-        TAD     SASZ
-        DAC     HEAP
 SALCL:  PSH     IX              ; a body always starts empty
         LIX     NIL
         CLA
@@ -1017,10 +1021,9 @@ VTPUTV: CAL     VDESC
         POP     IX
         RET
 
-; Strings and arrays hold a pointer now instead of living at a fixed stride, so
-; the body is carved on first use.  The sizes are the ones they had before, so
-; nothing observable changes yet; two size classes are the next step.
-VSTRA:  LAC     TMPV            ; SVADDR's old contract: the name is in TMPV
+; Strings and arrays hold a pointer and the body is carved on first use, in one
+; of the two sizes SALLOC keeps free lists for.
+VSTRA:  LAC     TMPV            ; the name is in TMPV, not in AC
         CAL     VBODY
         DAC     SADDR
         RET
@@ -1092,12 +1095,16 @@ VBALL:  DAC     VLSZ
         RET
 
 ; =====================================================================
-; VNAME: read a variable name at the text pointer, step past it, return its
-; index.  A letter, then optionally a letter or a digit, and only the first two
-; characters are significant -- FOCAL's own rule.  The second position takes
-; thirty-seven values: nothing, A to Z, 0 to 9.  The stride is forty rather
-; than thirty-seven because 40n is two shift chains and an add, while 37n needs
-; three.  The three wasted slots per letter cost less than the multiply.
+; VNAME: read a variable name at the text pointer and step past it.  A letter,
+; then optionally a letter or a digit, and only the first two characters are
+; significant -- FOCAL's own rule.
+;
+; The two characters come back as two separate indices, VN1 for the first and
+; VN2 for the second, because the lookup is two levels deep: VN2 picks one of
+; thirty-seven classes -- nothing, A to Z, 0 to 9 -- and VN1 an entry within
+; that class's block.  Nothing is multiplied out, which is the point: a flat
+; index into a cross product needed 40n, and 40n is two shift chains and an
+; add.
 ; =====================================================================
 VNAME:  LAC     (TXTP) , X
         TAD     MACHR
@@ -1713,30 +1720,417 @@ EMNC2:  LAC     ETMP
 ; =====================================================================
 ; line handling
 ; =====================================================================
-; parse an unsigned integer at the text pointer into AC, no sign, no expression
-RDNUM:  CLA
-        DAC     NUM
-RDNL:   LAC     (TXTP) , X
-        TAD     M0C
-        DAC     DIGIT
-                SKNM                    ; skip when not negative
-        JMP     RDND
-        LAC     DIGIT
-        TAD     M10
-                SKM                     ; skip when negative
-        JMP     RDND
-        LAC     NUM             ; num*10 = num*8 + num*2, three shifts and an
-        SHA                     ; add: the general multiplier is far too much
-        DAC     T10             ; machinery for a constant
+; AC*10 = AC*8 + AC*2, three shifts and an add: the general multiplier is far
+; too much machinery for a constant, and this is the parser's inner step.
+TIMES10: SHA
+        DAC     T10
         SHA
         SHA
         TAD     T10
-        TAD     DIGIT
-        DAC     NUM
-        IXC
-        JMP     RDNL
-RDND:   LAC     NUM
         RET
+
+; the digit at the text pointer, in DIGIT and in AC, or -1 when there is none
+LDIG:   LAC     (TXTP) , X
+        TAD     M0C
+        DAC     DIGIT
+                SKNM                    ; skip when not negative
+        RET                     ; below '0', so already the answer
+        TAD     M10
+                SKM                     ; skip when negative, which is a digit
+        JMP     LDIGN
+        LAC     DIGIT
+        RET
+LDIGN:  LAC     MONE
+        RET
+RDLN:   LAC     (TXTP) , X
+        DAC     LNMK
+        AND     LNMASK
+        SAD     LNTAG           ; skip when it is not a line number
+        JMP     RDLN1
+        JMP     RDLERR
+RDLN1:  IXC
+        LAC     (TXTP) , X
+        DAC     LNV
+        IXC
+        RET
+
+; ---------------------------------------------------------------------
+; Compiling a typed line.
+;
+; The prompt takes characters and the interpreter runs words, so a typed line
+; is compiled before it is filed or run -- even an immediate one, because BODY
+; dispatches on a command word.  The rules are mkprog.py's, and bench.py holds
+; the two in step by listing every sample back out and diffing it against the
+; source.
+; ---------------------------------------------------------------------
+
+; CNLOOK: the letter in AC -> the name that begins with it, or zero.  A search
+; over twelve entries rather than a table indexed by letter: it runs once per
+; command listed and once per command typed, never in execution, and it leaves
+; every word of the table area read only, which a table built at reset did not.
+CNLOOK: PSH     IX
+        AND     C31
+        DAC     CNL
+        LIX     NIL
+CNLL:   LAC     (CNAMP) , X
+        SKNZ
+        JMP     CNLNO
+        DAC     CNAME
+        DIX     CNLI
+        LIX     NIL
+        LAC     (CNAME) , X     ; the name's first character is its letter
+        AND     C31
+        SAD     CNL             ; skip when it is not this one
+        JMP     CNLYES
+        LIX     CNLI
+        IXC
+        JMP     CNLL
+CNLYES: POP     IX
+        LAC     CNAME
+        RET
+CNLNO:  POP     IX
+        CLA
+        DAC     CNAME
+        RET
+
+; CEMIT: append AC to the line being compiled
+CEMIT:  PSH     IX
+        DAC     CEMT
+        LIX     CO
+        LAC     CEMT
+        DAC     (CBUFP) , X
+        ISZ     CO
+        NOP
+        POP     IX
+        LAC     CEMT
+        RET
+
+; CLET: nonzero when a letter stands at the text pointer
+CLET:   LAC     (TXTP) , X
+        TAD     MACHR
+                SKNM                    ; skip when not negative
+        JMP     CLETN
+        LAC     (TXTP) , X
+        TAD     MZCHR
+                SKM                     ; skip when negative, so within A..Z
+        JMP     CLETN
+        CLA
+        IAC
+        RET
+CLETN:  CLA
+        RET
+
+; CLNUM: the line number at the text pointer, emitted as a marker and a value.
+; The marker's low bit records that it was written without a point, which is
+; how DO tells a group from a line without dividing by a thousand.
+CLNUM:  CAL     RDLNT
+        DAC     CPT
+        SKNZ
+        RET
+        LAC     LNTAG
+        DAC     CN
+        LAC     LSOR            ; zero when every digit of the step was
+        SKNZ
+        JMP     CLNG
+        JMP     CLNE
+CLNG:   LAC     CN
+        TAD     GRPBIT
+        DAC     CN
+CLNE:   LAC     CN
+        CAL     CEMIT
+        LAC     CPT
+        CAL     CEMIT
+        RET
+
+; CCMD: the command word at the text pointer.  Pass one counts the letters,
+; pass two checks them against the name the letter selects, so G, GO and GOTO
+; are commands while GOTOO and XYZ are not.  What is not a command is left for
+; the caller to emit as the characters it was: that still dispatches to CUNK
+; through the letter, and still lists back out unchanged.
+;
+; CPW holds the letters emitted, zero when nothing was, and the text pointer is
+; then back where it started.  CTGT holds the line numbers the command takes.
+CCMD:   CLA
+        DAC     CTGT
+        DAC     CPW
+        DIX     CSAVE
+CCMDC:  CAL     CLET
+        SKNZ
+        JMP     CCMDV
+        ISZ     CPW
+        NOP
+        IXC
+        JMP     CCMDC
+CCMDV:  LAC     CPW
+        SKNZ
+        JMP     CCMDNO          ; no letters here at all
+        LIX     CSAVE
+        LAC     (TXTP) , X
+        DAC     CLTR
+        CAL     CNLOOK          ; a letter with no command has no name
+        SKNZ
+        JMP     CCMDNO
+        CLA
+        DAC     CK
+CCMDL:  LAC     CK
+        SAD     CPW              ; skip while letters remain to check
+        JMP     CCMDOK
+        LIX     CK
+        LAC     (CNAME) , X
+        DAC     CN
+        SKNZ
+        JMP     CCMDNO          ; typed longer than the name it would be
+        LAC     CSAVE
+        TAD     CK
+        DAC     CPT
+        LIX     CPT
+        LAC     (TXTP) , X
+        SAD     CN              ; skip when the letters differ
+        JMP     CCMDM
+        JMP     CCMDNO
+CCMDM:  ISZ     CK
+        NOP
+        JMP     CCMDL
+
+CCMDOK: LIX     CK              ; nonzero when the name goes on, so a prefix
+        LAC     (CNAME) , X
+        DAC     CN
+        LAC     CPW             ; letters written, into bits five to seven
+        SHA
+        SHA
+        SHA
+        SHA
+        SHA
+        TAD     ITEMB
+        DAC     CPT
+        LAC     CLTR
+        AND     C31
+        TAD     CPT
+        DAC     CPT
+        LAC     CPW             ; the character just past the letters
+        TAD     CSAVE
+        DAC     CK
+        LIX     CK
+        LAC     (TXTP) , X
+        SAD     DOT             ; skip when it is not a point
+        JMP     CCMDD
+        JMP     CCMDF
+CCMDD:  LAC     CPT             ; a point, after the whole name or a prefix
+        TAD     CDOTB
+        DAC     CPT
+        IXC
+        JMP     CCMDE
+CCMDF:  LAC     CN              ; no point, so this must be the whole name
+        SKNZ
+        JMP     CCMDE
+        JMP     CCMDNO          ; an abbreviation without its point
+CCMDE:  LAC     CPT
+        CAL     CEMIT
+        LAC     CLTR            ; how many line numbers this one takes
+        SAD     CI              ; skip when it is not IF
+        JMP     CCTG3
+        SAD     CG              ; skip when it is not GOTO
+        JMP     CCTG1
+        SAD     CDCH            ; skip when it is not DO
+        JMP     CCTG1
+        RET
+CCTG3:  LAC     C3
+        DAC     CTGT
+        CAL     CCOND           ; the condition first, so its digits are safe
+        RET
+CCTG1:  CLA
+        IAC
+        DAC     CTGT
+        RET
+CCMDNO: LIX     CSAVE           ; put the pointer back and emit nothing
+        CLA
+        DAC     CPW
+        RET
+
+; CCOND: copy IF's condition through the paren that closes it.  The digits in
+; it are operands, not line numbers, and this is what keeps them apart.
+CCOND:  CLA
+        DAC     CDEP
+CCONDL: LAC     (TXTP) , X
+        SKNZ
+        RET
+        SAD     LPAR            ; skip when it is not an open paren
+        JMP     CCOPEN
+        LAC     (TXTP) , X
+        SAD     RPAR            ; skip when it is not a close paren
+        JMP     CCCLOS
+        JMP     CCCOPY
+CCOPEN: ISZ     CDEP
+        NOP
+        JMP     CCCOPY
+CCCLOS: DSZ     CDEP            ; skip when the depth falls to zero
+        JMP     CCCOPY
+        JMP     CCLAST
+CCCOPY: LAC     (TXTP) , X
+        CAL     CEMIT
+        IXC
+        JMP     CCONDL
+CCLAST: LAC     (TXTP) , X      ; the closing paren belongs to the condition
+        CAL     CEMIT
+        IXC
+        RET
+
+; COMP: compile the line in LBUF.  The key lands in CKEY, zero when the line
+; carried no number, and the length in CO.
+COMP:   PSH     IX
+        LAC     LBUFA
+        DAC     TXTP
+        LIX     NIL
+        CLA
+        DAC     CO
+        DAC     CPQ
+        CAL     SKSP            ; indentation ahead of the number is not kept
+        CAL     RDLNT
+        DAC     CKEY
+        SKNZ
+        JMP     COMPS
+        CAL     CEMIT           ; the key heads the line, then its length,
+        CLA                     ; which is not known until the end
+        CAL     CEMIT
+COMPS:  LAC     (TXTP) , X      ; the spaces ahead of a command are text, and
+        SAD     SPC             ; CCMD wants to start on the first letter
+        JMP     COMPSP
+        JMP     COMPS1
+COMPSP: CAL     CEMIT
+        IXC
+        JMP     COMPS
+COMPS1: CAL     CCMD
+COMPB:  LAC     (TXTP) , X
+        SKNZ
+        JMP     COMPD
+        SAD     QUOTE           ; skip when it is not a quote
+        JMP     COMPQ
+        LAC     CPQ
+        SKNZ                    ; skip when inside a quoted string
+        JMP     COMPX
+        JMP     COMPC           ; in a string everything is verbatim
+COMPX:  LAC     (TXTP) , X
+        SAD     SEMI            ; skip when it is not a semicolon
+        JMP     COMPSE
+        LAC     CTGT            ; a line number only where one is expected
+        SKNZ
+        JMP     COMPC
+        CAL     LDIG
+                SKNM                    ; skip when not negative, so a digit
+        JMP     COMPC
+        CAL     CLNUM
+        DSZ     CTGT
+        NOP
+        JMP     COMPB
+COMPQ:  LAC     CPQ
+        XOR     ONE
+        DAC     CPQ
+        JMP     COMPC
+COMPSE: LAC     (TXTP) , X      ; the semicolon, then another command may come
+        CAL     CEMIT
+        IXC
+        JMP     COMPS
+COMPC:  LAC     (TXTP) , X
+        CAL     CEMIT
+        IXC
+        JMP     COMPB
+COMPD:  LAC     NLC             ; every line ends with one
+        CAL     CEMIT
+        LAC     CKEY            ; an immediate line is not stored, so it has
+        SKNZ                    ; neither key nor length to fill in
+        JMP     CMPDX
+        PSH     IX
+        LIX     ONE
+        LAC     CO
+        DAC     (CBUFP) , X
+        POP     IX
+CMPDX:  POP     IX
+        LAC     CO
+        RET
+
+; ---------------------------------------------------------------------
+; RDLNT, the text side of the line number.
+;
+; The prompt takes characters and the interpreter runs words, so a line typed
+; at the prompt is compiled before it is filed or run -- even an immediate one,
+; because BODY dispatches on a command word.  The rules are mkprog.py's, and
+; the listing WRITE produces from the result is compared against the source in
+; bench.py, which is what holds the two in step.
+; ---------------------------------------------------------------------
+; RDLNT: the fixed point line number in the text at the pointer, as a value.
+; One accumulator: the step's digits go into the packed number as they arrive,
+; and the padding that makes 2.1 and 02.100 the same line is that same
+; times-ten run again.  Nobody asks for the step's value, only whether it is
+; zero, so its digits are summed -- the sum is zero exactly when every digit
+; was, for an add instead of a second times-ten per digit.
+;
+; AC holds the value, LSOR zero when the number named a group.  Zero means
+; there was no number here, which is not an error.  What is: group zero, a
+; group above 99, a fourth digit of step, and a second point.
+RDLNT:   CLA
+        DAC     LNV
+        DAC     LSOR
+        DAC     LFD
+        CAL     LDIG            ; whether there is a number here at all is a
+                SKNM            ; property of the first character, so the loop
+        JMP     RDLTZ           ; is entered knowing and carries no flag
+RDLTG:  LAC     LNV
+        CAL     TIMES10
+        TAD     DIGIT
+        DAC     LNV
+        TAD     M100
+                SKM                     ; skip while still below a hundred
+        JMP     RDLERR          ; more than two digits of group
+        IXC
+        CAL     LDIG
+                SKNM                    ; skip when not negative, so a digit
+        JMP     RDLTP
+        JMP     RDLTG
+RDLTZ:  CLA
+        RET                     ; an unnumbered line, which is not an error
+RDLTP:  LAC     LNV             ; only the group has been read so far
+        SKNZ
+        JMP     RDLERR          ; group zero is not a line
+        LAC     (TXTP) , X
+        SAD     DOT             ; skip when it is not a point
+        JMP     RDLTF
+        JMP     RDLTPD
+RDLTF:  IXC
+RDLTS:  CAL     LDIG
+                SKNM                    ; skip when not negative, so a digit
+        JMP     RDLTPD
+        LAC     LFD
+        SAD     C3              ; skip while there is room for another digit
+        JMP     RDLERR
+        LAC     LNV
+        CAL     TIMES10
+        TAD     DIGIT
+        DAC     LNV
+        LAC     LSOR            ; the digits summed: zero exactly when every
+        TAD     DIGIT           ; one of them was, which is all anyone asks
+        DAC     LSOR
+        ISZ     LFD
+        NOP
+        IXC
+        JMP     RDLTS
+RDLTPD: LAC     LFD             ; pad the step out to three digits
+        SAD     C3              ; skip while it is still short
+        JMP     RDLTD
+        JMP     RDLTPZ
+RDLTPZ: LAC     LNV
+        CAL     TIMES10
+        DAC     LNV
+        ISZ     LFD
+        NOP
+        JMP     RDLTPD
+RDLTD:  LAC     (TXTP) , X
+        SAD     DOT             ; skip when it is not a point
+        JMP     RDLERR          ; two points in one line number
+        LAC     LNV
+        RET
+
+RDLERR: LAC     ERRL
+        JMP     ERROR
 
 ; step the text pointer past the end of the current line
 EOL:    LAC     (TXTP) , X
@@ -1748,217 +2142,104 @@ EOL:    LAC     (TXTP) , X
         JMP     EOL
 EOL1:   IXC
         RET
-
-; position the text pointer at the body of the line numbered TARG
 ; =====================================================================
-; The line index, a rope.
+; Finding a line.
 ;
-; FINDL used to walk the program text a character at a time, and since every
-; GOTO, IF and DO starts that walk from the beginning, the cost was quadratic
-; in the text: on an eighty line program a third of all cycles went into EOL.
-;
-; The index holds one pair per line, <number, position>, in chunks of 256
-; words: 127 pairs, then the count, then a link to the next chunk.  Chunks come
-; off the same bump allocator as everything else, so a short program pays for
-; one chunk and a long one grows a chain -- there is no worst case reserved up
-; front.  Lines are stored in ascending order, so the pairs are sorted and the
-; search could be halved further; it is linear for now because linear over a
-; hundred words already replaces a walk over thousands of characters.
-;
-; Any edit moves text and invalidates every position after it, so STORE and
-; ERASE just drop the index and the next search rebuilds it.  That trades one
-; scan per edit for none per jump.
+; A key heads every line and its length follows, so looking one up is a walk:
+; read a word, compare, and when it does not match step to start+length.  That
+; is a compare and an add per line, which is what the rope index of <key,
+; position> pairs used to buy -- back when the walk was over characters and had
+; to parse a number at every line.  With the header a pair of words the index,
+; its chunks, its build and its invalidation on every edit are unnecessary.
 ; =====================================================================
 
-; LIDROP: forget the index
-LIDROP: CLA
-        DAC     LIROOT
-        RET
-
-; LINEW: carve a chunk, clear its count and link, return its base in AC
-LINEW:  LAC     HEAP
+; LINEXT: step the text pointer to the line after this one
+LINEXT: PSH     IX
+        POP     AC
         DAC     LIT
-        TAD     C256
-        DAC     HEAP
-        PSH     IX
-        LIX     C254
-        CLA
-        DAC     (LIT) , X       ; the count
         IXC
-        DAC     (LIT) , X       ; the link
-        POP     IX
-        LAC     LIT
-        RET
-
-; LIADD: append the pair in LIN and LIP to the chunk in LICUR, chaining on
-LIADD:  PSH     IX
-        LIX     C254
-        LAC     (LICUR) , X
-        DAC     LICNT
-        SAD     C127
-        JMP     LIFULL
-        JMP     LIROOM
-LIFULL: POP     IX
-        CAL     LINEW           ; the chunk is full: link a fresh one
-        DAC     LIT
-        PSH     IX
-        LIX     C255
-        LAC     LIT
-        DAC     (LICUR) , X
-        POP     IX
-        LAC     LIT
-        DAC     LICUR
-        CLA
-        DAC     LICNT
-        PSH     IX
-LIROOM: LAC     LICNT           ; the pair goes at twice the count
-        SHA
+        LAC     (TXTP) , X      ; the length counts the whole line
+        TAD     LIT
         DAC     LIT
         LIX     LIT
-        LAC     LIN
-        DAC     (LICUR) , X
-        IXC
-        LAC     LIP
-        DAC     (LICUR) , X
-        LIX     C254
-        LAC     LICNT
-        IAC
-        DAC     (LICUR) , X
-        POP     IX
         RET
 
-; LIBUILD: one pass over the text, appending a pair per line
-LIBUILD: CAL    LINEW
-        DAC     LIROOT
-        DAC     LICUR
-        PSH     IX
+; LILOOK: TARG -> the head of that line in AC, biased by one so that zero can
+;         mean absent
+LILOOK: PSH     IX
+        LAC     TXTB
+        DAC     TXTP
         LIX     NIL
-LIBL:   LAC     (TXTB) , X
-        SKNZ
-        JMP     LIBD
-        SXD     NIL             ; remember where this line starts
-        JMP     LIBP
-LIBP:   PSH     IX
-        POP     AC
-        IAC                     ; stored one past, so that zero can mean absent
-        DAC     LIP
-        CAL     LISKSP
-        CAL     LIRDN           ; the line number
-        DAC     LIN
-        CAL     LIEOL
-        LAC     LIN
-        SKNZ
-        JMP     LIBL            ; a line with no number cannot be jumped to
-        PSH     IX
-        CAL     LIADD
-        POP     IX
-        JMP     LIBL
-LIBD:   POP     IX
-        RET
-
-; the three scanners above, reading TXTB rather than TXTP
-LISKSP: LAC     (TXTB) , X
-        SAD     SPC
-        JMP     LISK1
-        RET
-LISK1:  IXC
-        JMP     LISKSP
-
-LIRDN:  CLA                     ; its own scratch: LIP holds the position the
-        DAC     LIRA            ; caller saved before calling in here
-LIRDL:  LAC     (TXTB) , X
-        TAD     M0C
-        DAC     LIRD
-                SKNM                    ; skip when not negative
-        JMP     LIRDD
-        LAC     LIRD
-        TAD     M10
-                SKM                     ; skip when negative
-        JMP     LIRDD
-        LAC     LIRA            ; times ten, three shifts and an add
-        SHA
-        DAC     LIRT
-        SHA
-        SHA
-        TAD     LIRT
-        TAD     LIRD
-        DAC     LIRA
-        IXC
-        JMP     LIRDL
-LIRDD:  LAC     LIRA
-        RET
-
-LIEOL:  LAC     (TXTB) , X
-        SKNZ
-        RET
-        SAD     NLC
-        JMP     LIEO1
-        IXC
-        JMP     LIEOL
-LIEO1:  IXC
-        RET
-
-; LILOOK: TARG -> the position of that line in AC, or zero when absent
-LILOOK: LAC     LIROOT
-        SKNZ
-        JMP     LILB
-        JMP     LILGO
-LILB:   CAL     LIBUILD
-LILGO:  LAC     LIROOT
-        DAC     LICUR
-LILC:   PSH     IX
-        LIX     C254
-        LAC     (LICUR) , X
-        DAC     LICNT
-        POP     IX
-        CLA
-        DAC     LIT
-LILE:   LAC     LIT
-        SAD     LICNT
-        JMP     LILNX
-        LAC     LIT
-        SHA
-        DAC     LIN
-        PSH     IX
-        LIX     LIN
-        LAC     (LICUR) , X
-        SAD     TARG
-        JMP     LILHIT
-        POP     IX
-        ISZ     LIT
-        NOP
-        JMP     LILE
-LILHIT: IXC
-        LAC     (LICUR) , X
-        POP     IX
-        RET
-LILNX:  PSH     IX
-        LIX     C255
-        LAC     (LICUR) , X
-        POP     IX
+LILL:   LAC     (TXTP) , X
         SKNZ
         JMP     LILMISS
-        DAC     LICUR
-        JMP     LILC
-LILMISS: CLA
+        SAD     TARG            ; skip when this is not the line
+        JMP     LILHIT
+        CAL     LINEXT
+        JMP     LILL
+LILHIT: PSH     IX
+        POP     AC
+        IAC
+        DAC     LIT
+        POP     IX
+        LAC     LIT
+        RET
+LILMISS: POP    IX
+        CLA
         RET
 
-FIND:   LAC     TXTB            ; a jump always lands in the stored program
+; LIGE: the smallest line number at or above LIB, in AC, with that line's head
+;       in LIGP; zero when there is nothing that high.  The lines are held in
+;       ascending order, so the first one in range is the answer.
+LIGE:   PSH     IX
+        LAC     TXTB
+        DAC     TXTP
+        LIX     NIL
+        CLA
+        DAC     LIGP
+LIGL:   LAC     (TXTP) , X
+        SKNZ
+        JMP     LIGMISS
+        DAC     LIGN
+        LAC     LIB
+        CIA
+        TAD     LIGN
+        AND     BIT17
+                SKNZ                    ; skip when below the bound
+        JMP     LIGHIT
+        CAL     LINEXT
+        JMP     LIGL
+LIGHIT: PSH     IX
+        POP     AC
+        IAC
+        DAC     LIGP
+        POP     IX
+        LAC     LIGN
+        RET
+LIGMISS: POP    IX
+        CLA
+        RET
+
+
+FIND:   CAL     LILOOK          ; one lookup instead of a walk
+        SKNZ
+        JMP     FINDX           ; no such line
+                                ; and on into FINDP with its position
+
+; FINDP: the head of a line, biased by one so that zero can mean absent, in AC.
+; Every caller runs STEP next, and STEP is what steps over the key and the
+; length.
+FINDP:  TAD     MONE            ; undo the bias
+        DAC     LIT
+        LAC     TXTB            ; a jump always lands in the stored program
         DAC     TXTP
         CLA
         IAC
         DAC     INPROG
-        LIX     NIL
-FINDL:  CAL     LILOOK          ; one lookup instead of a walk
-        SKNZ
-        JMP     FINDX           ; no such line: stop the program
-        TAD     MONE            ; undo the bias the index stores
-        DAC     LIT
         LIX     LIT
-        CAL     SKSP
-        CAL     RDNUM           ; leave IX past the number, as the walk did
         RET
-FINDX:  JMP     STOP
+FINDX:  LAC     ERRL
+        JMP     ERROR
 
 ; =====================================================================
 ; commands
@@ -1978,12 +2259,11 @@ STEP:   LAC     BRK
         JMP     STEP1
         LAC     ERRC
         JMP     ERROR
-STEP1:  CAL     SKSP
-        LAC     (TXTP) , X
-        SKNZ
+STEP1:  LAC     (TXTP) , X      ; the key heads the line, its length follows,
+        SKNZ                    ; and the body is past the pair
         JMP     ENDRUN
-        CAL     RDNUM
-        DAC     LNUM
+        IXC
+        IXC
 BODY:   CAL     SKSP
 ; Dispatch through a table instead of a chain of comparisons.  Indexing by
 ; the low five bits of the command letter needs no range check: 'A'..'Z' map
@@ -2003,7 +2283,7 @@ BODY:   CAL     SKSP
 
 ; SET v = expression
 DOSET:  LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
         CAL     SKSP
         CAL     VNAME
         DAC     SVAR            ; not TMPV: the evaluator uses that one
@@ -2264,7 +2544,7 @@ SETSLD: PSH     IX
 
 ; TYPE item {, item}   where item is "string" or ! or an expression
 DOTYPE: LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
 DOTYL:  CAL     SKSP
         LAC     (TXTP) , X
         SKNZ
@@ -2347,7 +2627,7 @@ DOTYD:  CAL     EOS
 
 ; IF (expression) neg, zero, pos
 DOIF: LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
         CAL     SKSP
         IXC                 ; consume the '('
         CAL     EXPR
@@ -2378,11 +2658,16 @@ DOIFP:  CLA
         IAC
         DAC     ARGN
 DOIFG:  CAL     SKSP            ; walk to the selected target
-        CAL     RDNUM
-        DAC     TARG
         LAC     ARGN
         SKNZ
-        JMP     DOIFJ
+        JMP     DOIFR
+        LAC     (TXTP) , X      ; not this arm, so step over it: a marker and
+        AND     LNMASK          ; its value, two words, no reading required
+        SAD     LNTAG           ; skip when it is not a line number
+        JMP     DOIFS
+        JMP     RDLERR
+DOIFS:  IXC
+        IXC
         DSZ     ARGN
         NOP
         CAL     SKSP
@@ -2393,6 +2678,8 @@ DOIFG:  CAL     SKSP            ; walk to the selected target
         RET
 DOIFN:  IXC
         JMP     DOIFG
+DOIFR:  CAL     RDLN
+        DAC     TARG
 DOIFJ:  CAL     FIND
         CLA
         DAC     MORE
@@ -2400,9 +2687,9 @@ DOIFJ:  CAL     FIND
 
 ; GOTO n
 DOGOTO: LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
         CAL     SKSP
-        CAL     RDNUM
+        CAL     RDLN
         DAC     TARG
         CAL     FIND
         CLA
@@ -2410,7 +2697,12 @@ DOGOTO: LIX     TPSAVE
         RET
 
 
-; WRITE: list the stored program
+; WRITE: list the stored program.
+;
+; The stored form is a compression of what was typed, so listing it is the
+; decompression: a key, then characters kept verbatim, then the two kinds of
+; word the compiler put there.  Only the number's own spelling is lost, and it
+; comes back canonical, which is what FOCAL did anyway.
 DOWRIT: LIX     TPSAVE
         CAL     EOL
         PSH     IX
@@ -2418,17 +2710,118 @@ DOWRIT: LIX     TPSAVE
 DOWR1:  LAC     (TXTB) , X      ; the stored program, not the line just typed
         SKNZ
         JMP     DOWR2
+        CAL     WKEYP           ; the key heads every line
+        IXC
+        IXC                     ; and its length, which is not printed
+DOWR3:  LAC     (TXTB) , X
+        SKNZ
+        JMP     DOWR2
+        SAD     NLC             ; skip when it is not the end of the line
+        JMP     DOWR4
+        AND     ITEMB
+        SKNZ
+        JMP     DOWR5           ; a character, kept as it was
+        LAC     (TXTB) , X
+        AND     LNMASK
+        SAD     LNTAG           ; skip when it is not a line number
+        JMP     DOWR6
+        CAL     WCMD            ; a command word
+        IXC
+        JMP     DOWR3
+DOWR6:  IXC                     ; a line number: its value is the next word
+        LAC     (TXTB) , X
+        CAL     WKEYP
+        IXC
+        JMP     DOWR3
+DOWR5:  LAC     (TXTB) , X
+        CAL     PUTC
+        IXC
+        JMP     DOWR3
+DOWR4:  LAC     NLC
         CAL     PUTC
         IXC
         JMP     DOWR1
 DOWR2:  POP     IX
         RET
 
+; WCMD: the command word at the text pointer, spelled back out.  The word says
+; which letter and how many of its letters were written, so G, GO and GOTO all
+; come back as they went in, and a trailing point with them.
+WCMD:   PSH     IX
+        LAC     (TXTB) , X
+        DAC     WCH
+        CAL     CNLOOK          ; the letter selects a name
+        DAC     WN
+        LAC     WCH
+        SRA
+        SRA
+        SRA
+        SRA
+        SRA
+        AND     C7
+        DAC     WCH2            ; letters written
+        LIX     NIL
+WCMDL:  LAC     WCH2
+        SKNZ
+        JMP     WCMDD
+        LAC     (WN) , X
+        CAL     PUTC
+        IXC
+        DSZ     WCH2
+        NOP
+        JMP     WCMDL
+WCMDD:  LAC     WCH
+        AND     CDOTB           ; the point, exactly as it was typed
+        SKNZ
+        JMP     WCMDX
+        LAC     DOT
+        CAL     PUTC
+WCMDX:  POP     IX
+        RET
+
+; WKEYP: a line number in AC, printed gg.sss, or gg when the step is zero and
+; the number named a group.  WRITE lists a program once, so the general divide
+; is the right tool here and splitting the value costs nothing worth saving.
+WKEYP:  DAC     M1
+        LAC     C1000
+        DAC     M2
+        CAL     DIV
+        DAC     WKEY            ; the group
+        LAC     MREM
+        DAC     WSTEP
+        LAC     WKEY            ; two digits, so a leading zero when it is small
+        TAD     M10
+                SKM                     ; skip when below ten
+        JMP     WK1
+        LAC     ZEROC
+        CAL     PUTC
+WK1:    LAC     WKEY
+        CAL     PNUM
+        LAC     WSTEP
+        SKNZ
+        RET                     ; a group is written without a point
+        LAC     DOT
+        CAL     PUTC
+        LAC     WSTEP           ; three digits, zeros in front as needed
+        TAD     M100
+                SKM                     ; skip when below a hundred
+        JMP     WK2
+        LAC     ZEROC
+        CAL     PUTC
+        LAC     WSTEP
+        TAD     M10
+                SKM                     ; skip when below ten
+        JMP     WK2
+        LAC     ZEROC
+        CAL     PUTC
+WK2:    LAC     WSTEP
+        CAL     PNUM
+        RET
+
 ; ERASE: clear every variable
 ; ERASE drops every block instead of walking every variable: the class
 ; pointers go empty and the heap rewinds, which is the whole of it.
-DOERAS: CAL     LIDROP
-        LIX     TPSAVE
+DOERAS: LIX     TPSAVE
         CAL     EOL
         PSH     IX
         LIX     NIL
@@ -2441,33 +2834,97 @@ DOER1:  DAC     (VPTRB) , X
         SXD     C37
         JMP     DOER2
         JMP     DOER1
-DOER2:  LAC     HEAPBV
+DOER2:  LAC     HEAPTOP
         DAC     HEAP
         POP     IX
         RET
 
-; DO n: run line n as a subroutine, then carry on after the DO.
-; The nesting lives on the hardware stack, so DO inside DO costs nothing
-; beyond two words per level and needs no interpreter state at all.
+; DO gg.sss runs that line as a subroutine, then carries on after the DO.
+; DO gg, a group with no step, runs every line of the group in turn, which is
+; what the fixed point line numbers are for.
+;
+; The nesting lives on the hardware stack -- the mode, the text pointer, and
+; for a group the cursor and the group's upper end -- so DO inside DO needs no
+; interpreter state at all, and a nested DO cannot overwrite the outer walk.
+; The mode is saved because FIND moves both the pointer and INPROG into the
+; stored program: without it, a DO typed at the prompt would carry on running
+; the program from wherever the typed line's offset happened to fall.
 DODO:   LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
         CAL     SKSP
-        CAL     RDNUM
+        CAL     RDLN
         DAC     TARG
-        CAL     EOL             ; IX now points at the line after this one
-        PSH     IX
-        CAL     FIND            ; IX at the body of line TARG
+        LAC     LNMK            ; the marker records that the number was
+        AND     GRPBIT          ; written without a point, so it names a group
+        DAC     DOGF
+        LAC     INPROG
+        PSH     AC
+        LAC     TXTP
+        PSH     AC
+        PSH     IX              ; the rest of this line, to come back to
+        LAC     DOGF
+        SKNZ                    ; skip when it named a group
+        JMP     DODO1
+        JMP     DOGRP
+DODO1:  CAL     FIND            ; the head of line TARG
         CAL     STEP            ; run it
-        POP     IX
+        JMP     DODOD
+
+DOGRP:  LAC     TARG            ; the group's last possible number, parked
+        TAD     C999            ; under the cursor for the whole walk
+        PSH     AC
+        LAC     TARG
+        PSH     AC
+DOGRPL: POP     AC
+        DAC     LIB             ; the cursor
+        POP     AC
+        DAC     DOGL            ; the upper end
+        CAL     LIGE
+        SKNZ
+        JMP     DOGRPE          ; the index holds nothing that high
+        DAC     TARG
+        CIA
+        TAD     DOGL
+        AND     BIT17
+                SKNZ                    ; skip when past the group
+        JMP     DOGRPI
+        JMP     DOGRPE
+DOGRPI: LAC     DOGL
+        PSH     AC
+        LAC     TARG            ; the cursor moves one past the line we run
+        IAC
+        PSH     AC
+        LAC     LIGP            ; the position LIGE already found
+        CAL     FINDP
+        CAL     STEP
+        LAC     DORF            ; RETURN unwinds the group, not just the line
+        SKNZ
+        JMP     DOGRPL
+        POP     AC
+        POP     AC
+        JMP     DODOD
+
+DOGRPE: LAC     DOGL            ; the cursor never left the group's base, so
+        TAD     M999            ; nothing ran: the group does not exist
+        SAD     LIB             ; skip when the cursor has moved
+        JMP     RDLERR
+        JMP     DODOD
+
+DODOD:  POP     IX
+        POP     AC
+        DAC     TXTP
+        POP     AC
+        DAC     INPROG
         CLA
-        DAC     MORE
-        RET
+        DAC     DORF            ; a RETURN is spent here, not further out
+        CAL     EOS             ; and the rest of the line runs, which is what
+        RET                     ; FOCAL does: a DO is not the end of a line
 
 ; ASK v {, v}: read a decimal number from the keyboard into each variable.
 ; KSF tests the device flag and skips in one instruction without touching AC,
 ; which is the whole point of putting status behind IOT rather than in memory.
 DOASK:  LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
 DOASKL: CAL     SKSP
         CAL     VNAME
         DAC     SVAR
@@ -2702,7 +3159,7 @@ EOSS:   IXC
 ; and calls BODY again.  The loop variable lives in the ordinary variable
 ; table, exactly as FOCAL specifies, so the body can read and even change it.
 DOFOR:  LIX     TPSAVE
-        CAL     SKIPW
+        IXC                     ; past the command word
         CAL     SKSP
         CAL     VNAME
         DAC     FVARI
@@ -2758,32 +3215,26 @@ FORD:   LIX     FBODY
         DAC     MORE
         RET
 
-; RETURN: abandon the rest of the line, which is how a DO comes back early
+; RETURN: abandon the rest of the line, which is how a DO comes back early.
+; Over a group the rest of the group goes too, so a subroutine spread across
+; several lines can leave from the middle of the first.
 DORET:  LIX     TPSAVE
         CAL     EOL
+        CLA
+        IAC
+        DAC     DORF
         CLA
         DAC     MORE
         RET
 
-; step over a word of letters: SKIPW stops at a space, which is not enough
-; when the word is the last thing on the line
+; step over a run of letters, stopping on the first character that is not one,
+; end of line included
 SKIPT:  LAC     (TXTP) , X
         TAD     MACHR
                 SKNM                    ; skip when not negative
         RET
         IXC
         JMP     SKIPT
-
-; skip the rest of the command word
-SKIPW:  LAC     (TXTP) , X
-        SKNZ
-        RET
-        SAD     SPC             ; skip when it is not a space
-        RET
-        IXC
-        JMP     SKIPW
-
-; =====================================================================
 RESET:  CLA
         DAC     CURS
         LIX     CURS
@@ -2812,7 +3263,7 @@ CLVD:   EI                      ; the keyboard reaches us through irq1
         CAL     RUN
 STOP:   HLT
 
-        .advance 0x2D00
+        .org    0x1FF00
 CTAB:
         JMP     CUNK    ; 0  .
         JMP     DOASK   ; 1  A
@@ -2847,15 +3298,35 @@ CTAB:
         JMP     CUNK    ; 30  .
         JMP     CUNK    ; 31  .
 
+; The command names.  A command's letter is its own first character, so there is
+; no second table indexed by letter: CNLOOK searches this list, which keeps
+; every word up here read only.  What cannot be derived is the other direction
+; -- CTAB holds jumps, and an address carries no letters -- so adding a command
+; means a name here and a JMP there, and bench.py checks the two agree.
+CNAMES: .dd     NASK, NCOMMENT, NDO, NERASE, NFOR, NGOTO
+        .dd     NIF, NQUIT, NRETURN, NSET, NTYPE, NWRITE, 0
 
-        .advance 0x2E40
+NASK:     .dd     "ASK", 0
+NCOMMENT: .dd     "COMMENT", 0
+NDO:      .dd     "DO", 0
+NERASE:   .dd     "ERASE", 0
+NFOR:     .dd     "FOR", 0
+NGOTO:    .dd     "GOTO", 0
+NIF:      .dd     "IF", 0
+NQUIT:    .dd     "QUIT", 0
+NRETURN:  .dd     "RETURN", 0
+NSET:     .dd     "SET", 0
+NTYPE:    .dd     "TYPE", 0
+NWRITE:   .dd     "WRITE", 0
+
+
+
+; The heap grows down from the top of the arena, HCARVE taking blocks off it as
+; classes of names appear, so what is used is what is spent -- and the program
+; text growing up from the bottom is the only thing it can collide with.
+
+; The bottom of the arena: the text grows up from here while the heap grows down
+; from the top of the same span, so the two share one boundary rather than
+; having a ceiling each.  It reads best last and .org places it regardless.
+        .org    0x2000
         .include "program.s"
-
-; above the framebuffer, which SCRP puts at 0x4000.  The index is now a letter
-; times forty plus the second character, so every table has 1040 entries.
-; The heap, above the framebuffer at 0x4000.  Blocks are carved off it as
-; classes of names appear, so what is used is what is spent.
-        .advance 0x4400
-HEAPB:  .advance 0x10000
-
-

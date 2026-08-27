@@ -1,9 +1,9 @@
-10 TYPE "A ", FABS(-7), !
-20 TYPE "B ", FSGN(-9), !
-30 TYPE "C ", FSGN(0), !
-40 TYPE "D ", FSGN(4), !
-50 TYPE "E ", FITR(12), !
-60 TYPE "F ", FSQT(144), !
-70 TYPE "G ", FSQT(10), !
-80 TYPE "H ", FSQT(FABS(0-81)), !
-90 QUIT
+01.010 TYPE "A ", FABS(-7), !
+01.020 TYPE "B ", FSGN(-9), !
+01.030 TYPE "C ", FSGN(0), !
+01.040 TYPE "D ", FSGN(4), !
+01.050 TYPE "E ", FITR(12), !
+01.060 TYPE "F ", FSQT(144), !
+01.070 TYPE "G ", FSQT(10), !
+01.080 TYPE "H ", FSQT(FABS(0-81)), !
+01.090 QUIT

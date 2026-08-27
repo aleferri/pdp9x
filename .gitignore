@@ -1,0 +1,12 @@
+# Assembler and interpreter leavings.  bench.py assembles to read the symbol
+# table, which drops these next to the sources; build.sh removes them but a
+# bench run on its own does not, and one of them is half a million lines.
+asm/*.export.txt
+asm/*.bin
+
+# Generated: build.sh regenerates it from focal/sum.fc, or from $FOCAL, and
+# bench.py makes one if it is missing.  It used to be tracked, from whichever
+# sample happened to be built last, so every build reported it modified.
+asm/program.s
+
+__pycache__/

@@ -13,7 +13,7 @@ VL:     .dd     VLO
 
         .include "arithlib.s"
 
-        .advance 0x2400
+        .org    0x1F400
 RESET:  CLA
         DAC     IDX
 .loop:  LIX     IDX
@@ -38,6 +38,6 @@ RESET:  CLA
         JMP     STOP
         JMP     .loop
 STOP:   HLT
-        .advance 0x2600
+        .org    0x1F600
 VHI:    .dd     0, 0, 0, 1, 262143, 262143, 12345, 131072
 VLO:    .dd     0, 5, 12345, 0, 262143, 0, 54321, 0

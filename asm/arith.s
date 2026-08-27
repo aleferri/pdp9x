@@ -31,7 +31,7 @@ NVEC:   .dd   -9
 
         .include "arithlib.s"
 
-        .advance 0x2400
+        .org    0x1F400
 
 ; =====================================================================
 ; self test
@@ -103,7 +103,7 @@ MNTXT:  .dd    45
         .dd    50
         .dd    0
 
-        .advance 0x2600
+        .org    0x1F600
 VECS:                           ; a, b, a*b, a/b, a mod b
         .dd    7
         .dd    3

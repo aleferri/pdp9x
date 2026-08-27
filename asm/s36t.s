@@ -13,7 +13,7 @@ VB:     .dd     TB
 
         .include "arithlib.s"
 
-        .advance 0x2400
+        .org    0x1F400
 RESET:  CLA
         DAC     IDX
 .loop:  LIX     IDX
@@ -39,6 +39,6 @@ RESET:  CLA
         JMP     STOP
         JMP     .loop
 STOP:   HLT
-        .advance 0x2600
+        .org    0x1F600
 TA:     .dd     1000, -1000, 1000, -1000, 131071, -131072, 0, 12345
 TB:     .dd     1000, 1000, -1000, -1000, 131071, 131071, 5, -6789
